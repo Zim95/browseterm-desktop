@@ -1,0 +1,15 @@
+[tool.poetry]
+name = "browseterm-desktop"
+version = "0.1.0"
+description = "Browseterm Desktop Resource MVP: Mac menu-bar app for auth + device registration + CPU/memory/storage allocation, talking to the Cloud Device API only."
+authors = ["Zim95 <shresthanamah@gmail.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = ">=3.11,<3.12"
+httpx = "^0.28.1"
+rumps = {version = "^0.4.0", markers = "sys_platform == 'darwin'"}
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
