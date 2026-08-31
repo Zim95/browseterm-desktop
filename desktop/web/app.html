@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>BrowseTerm</title>
+    <link rel="stylesheet" href="static/css/app.css">
+</head>
+<body>
+    <nav class="sidebar">
+        <div class="sidebar-header">
+            <span class="logo-text">BrowseTerm</span>
+        </div>
+
+        <div class="sidebar-menu">
+            <ul class="menu-items">
+                <li class="menu-item">
+                    <a href="#" class="menu-link active">
+                        <span class="menu-icon">🖥️</span>
+                        <span class="menu-text">Device</span>
+                    </a>
+                </li>
+            </ul>
+        </div>
+
+        <div class="sidebar-footer">
+            <button class="logout-btn" id="logoutBtn">
+                <span class="logout-icon">⏻</span>
+                <span class="logout-text">Logout</span>
+            </button>
+        </div>
+    </nav>
+
+    <main class="main-content">
+        <div class="content-container">
+            <h1>Device</h1>
+
+            <div class="status-row">
+                <span id="statusBadge" class="status-badge not_registered">-</span>
+            </div>
+
+            <div class="device-card">
+                <div class="device-field">
+                    <span class="device-field-label">Device Name</span>
+                    <span class="device-field-value" id="deviceName">-</span>
+                </div>
+                <div class="device-field">
+                    <span class="device-field-label">Operating System</span>
+                    <span class="device-field-value" id="deviceOs">-</span>
+                </div>
+                <div class="device-field">
+                    <span class="device-field-label">Architecture</span>
+                    <span class="device-field-value" id="deviceArch">-</span>
+                </div>
+                <div class="device-field">
+                    <span class="device-field-label">CPU</span>
+                    <span class="device-field-value" id="deviceCpu">-</span>
+                </div>
+                <div class="device-field">
+                    <span class="device-field-label">Memory</span>
+                    <span class="device-field-value" id="deviceMemory">-</span>
+                </div>
+                <div class="device-field">
+                    <span class="device-field-label">Storage</span>
+                    <span class="device-field-value" id="deviceStorage">-</span>
+                </div>
+            </div>
+
+            <button class="activate-btn" id="activateBtn">Activate</button>
+            <div class="error-message" id="errorMessage"></div>
+        </div>
+    </main>
+
+    <script src="static/js/app.js"></script>
+</body>
+</html>

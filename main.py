@@ -1,12 +1,13 @@
 """
-Browseterm Desktop - hello world.
+Browseterm Desktop.
 
 Run: python main.py
-Pops up a native macOS alert dialog saying "Hello World". That's it - this is the reset
-baseline the real Desktop app (auth, hardware detection, resource allocation, device
-registration) gets rebuilt on top of, incrementally.
+
+Opens the BrowseTerm desktop window: the real browseterm-server-local login page (Google/GitHub
+OAuth) if not already logged in, then the Device page. See desktop/app.py for how the window is
+driven and desktop/config.py for the Local/Cloud URLs it talks to.
 """
-import rumps
+from desktop.app import run
 
 if __name__ == "__main__":
-    rumps.alert(title="Browseterm", message="Hello World")
+    run()

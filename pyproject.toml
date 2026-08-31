@@ -1,13 +1,19 @@
 [tool.poetry]
 name = "browseterm-desktop"
 version = "0.1.0"
-description = "Browseterm Desktop app - reset to a hello-world baseline, rebuilding incrementally."
+description = "Browseterm Desktop app - shared Local login flow, device bootstrap/activation, Keychain-backed device credential."
 authors = ["Zim95 <shresthanamah@gmail.com>"]
 readme = "README.md"
+package-mode = false
 
 [tool.poetry.dependencies]
 python = ">=3.11,<3.12"
-rumps = {version = "^0.4.0", markers = "sys_platform == 'darwin'"}
+pywebview = {version = "^5.0", markers = "sys_platform == 'darwin'", extras = ["cocoa"]}
+httpx = "^0.27.0"
+keyring = "^25.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.0"
 
 [build-system]
 requires = ["poetry-core"]
