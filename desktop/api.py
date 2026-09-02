@@ -28,16 +28,21 @@ def _device_status(device: Optional[dict]) -> str:
 class Api:
     """`on_logout` is called after local/Keychain state is cleared, so `DesktopApp` can swap the
     window back to the login page. `on_retry_login` backs the "Retry" button on the
-    connection-error page (desktop/app.py) shown when Local can't be reached."""
+    connection-error page (desktop/app.py) shown when Local can't be reached. `on_start_login`
+    backs the "Log in" button on the login-start page - login now happens in the system browser
+    (see desktop/app.py's module docstring), so this just kicks that off; `Api` itself holds no
+    window/browser reference of its own, same as the other two callbacks."""
 
     def __init__(
         self, state: DesktopState, keychain: KeychainStorage,
         on_logout: Callable[[], None], on_retry_login: Callable[[], None],
+        on_start_login: Callable[[], None],
     ):
         self._state = state
         self._keychain = keychain
         self._on_logout = on_logout
         self._on_retry_login = on_retry_login
+        self._on_start_login = on_start_login
 
     def device_info(self) -> dict[str, Any]:
         hardware = detect_hardware()
@@ -77,3 +82,6 @@ class Api:
 
     def retry_login(self) -> None:
         self._on_retry_login()
+
+    def start_login(self) -> None:
+        self._on_start_login()

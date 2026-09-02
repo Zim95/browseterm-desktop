@@ -1,35 +1,47 @@
 """
 Desktop app orchestration: owns the pywebview window and is the only place that navigates it.
 
-P07 (see ~/browseterm/p07.md) rewrite: the WebView shows Local's real `/login` page and shares
-Local's own login flow exactly like a browser tab would (no separate Desktop OAuth
-implementation) - Google/GitHub OAuth now happens entirely on Cloud, Local's part is just
-redirecting there and later redeeming a one-time handoff code. Once that flow lands back on
-Local's home page, this app does NOT keep the resulting session cookie around: it uses it exactly
-once, immediately, to bootstrap a separate, long-lived device credential (`_bootstrap_device`) via
-Local's `/device/bootstrap` (session-cookie authenticated) + Cloud's public
-`/auth/device-bootstrap/redeem` - that device token is what's actually persisted, in macOS
-Keychain (desktop/keychain.py), and every Device API call after that uses
-`Authorization: Bearer <device_token>`, never the browser session cookie (p07.md section 20).
+Login flow: this app's WebView never hosts Google/GitHub's login page itself any more. Google
+(and increasingly GitHub) actively block or challenge OAuth sign-in attempted from an embedded
+WebView - exactly what pywebview's window is - as a long-standing anti-phishing policy, so
+showing Local's real `/login` page inside this window (the original P07 design, see
+~/browseterm/p07.md) hits that block. Instead:
 
-Consequence for restart behavior: "am I logged in" is now "does Keychain hold a valid device
-token" - independent of whether the browser/WebView session cookie is still valid. On startup, a
-valid Keychain token skips the WebView login entirely and goes straight to the Device page;
-Local's browser session, no longer being used once the WebView is swapped away, is simply left to
-expire on its own TTL rather than explicitly kept alive or revoked (see `_handle_logout`'s
-docstring for the same trade-off on logout).
+1. The WebView shows a small local "Log in" page (`desktop/web/login_start.html`). Clicking it
+   starts a one-shot local loopback HTTP server (`desktop/loopback_server.py`) on 127.0.0.1 and
+   opens Local's real `/login?target=desktop&desktop_port=<n>` in the user's actual SYSTEM
+   browser via `webbrowser.open()` - Google/GitHub see a real browser, not an embedded one.
+2. The user completes OAuth and Local's own login flow entirely in that system browser tab,
+   exactly like any other browser visit to Local. Local's `auth_callback`
+   (browseterm-server-local's `src/api_handlers.py`) recognizes the desktop_port cookie set in
+   step 1 survived the OAuth round trip (same browser tab, same domain), mints a one-time
+   device-bootstrap code server-side, and redirects the SYSTEM browser to this app's waiting
+   loopback server with that code.
+3. The loopback server hands the code back to this process, which redeems it against Cloud's
+   public `/auth/device-bootstrap/redeem` exactly as before, and stores the resulting long-lived
+   device Bearer token in macOS Keychain (`desktop/keychain.py`) - every Device API call after
+   that uses `Authorization: Bearer <device_token>`, never a browser session cookie at all
+   (p07.md section 20 - unchanged from the original design, only how the bootstrap CODE gets to
+   this process changed).
+
+Consequence for restart behavior: "am I logged in" is still "does Keychain hold a valid device
+token" - independent of the system browser's own session. A valid Keychain token on startup skips
+the login page entirely and goes straight to the Device page.
 
 Unreachable Local: pywebview has no "failed to load" event to react to (only `loaded`, which
 simply never fires on a failed navigation), so a bad `BROWSETERM_LOCAL_URL` or Local just not
 running would otherwise leave the window showing nothing but its raw `background_color` forever,
 with no explanation. `_backend_reachable` probes Local with a short timeout *before* the window
-ever tries to load it, so that failure mode always shows a real, actionable error page
-(`_connection_error_html`, with a Retry button) instead of a silent blank screen.
+ever tries to load the login-start page or open the system browser, so that failure mode always
+shows a real, actionable error page (`_connection_error_html`, with a Retry button) instead of a
+silent blank screen or a browser tab pointed at nothing.
 """
+import json
 import os
 import threading
+import webbrowser
 from typing import Optional
-from urllib.parse import urlencode, urlparse
+from urllib.parse import urlencode
 
 import httpx
 import webview
@@ -38,17 +50,16 @@ from desktop.api import Api
 from desktop.cloud_client import CloudClient, CloudClientError, redeem_device_bootstrap
 from desktop.config import (
     BROWSETERM_LOCAL_URL,
-    CSRF_COOKIE_NAME,
+    DESKTOP_LOGIN_TIMEOUT_SECONDS,
     DEVICE_HEARTBEAT_INTERVAL_SECONDS,
-    SESSION_COOKIE_NAME,
 )
 from desktop.device_info import detect_hardware
 from desktop.keychain import KeychainStorage
+from desktop.loopback_server import LoopbackServer
 from desktop.state import load_state
 
 _APP_HTML = os.path.join(os.path.dirname(__file__), "web", "app.html")
-_LOGIN_URL = f"{BROWSETERM_LOCAL_URL}/login"
-_LOCAL_NETLOC = urlparse(BROWSETERM_LOCAL_URL).netloc
+_LOGIN_START_HTML = os.path.join(os.path.dirname(__file__), "web", "login_start.html")
 _BACKEND_CHECK_TIMEOUT_SECONDS = 4.0
 
 
@@ -88,10 +99,13 @@ class DesktopApp:
         self._state = load_state()
         self._keychain = KeychainStorage()
         self._authenticated = False
+        self._login_in_progress = False
         self._heartbeat_stop = threading.Event()
         self._heartbeat_thread: Optional[threading.Thread] = None
         self._api = Api(
-            self._state, self._keychain, on_logout=self._handle_logout, on_retry_login=self._handle_retry_login
+            self._state, self._keychain,
+            on_logout=self._handle_logout, on_retry_login=self._handle_retry_login,
+            on_start_login=self._handle_start_login,
         )
         self._window: Optional[webview.Window] = None
 
@@ -106,7 +120,6 @@ class DesktopApp:
             background_color="#A8FBD3",
             **create_kwargs,
         )
-        self._window.events.loaded += self._on_loaded
         if self._authenticated:
             self._start_heartbeat()
         webview.start()
@@ -115,9 +128,9 @@ class DesktopApp:
         if self._state.device_id and self._device_token_is_valid():
             self._authenticated = True
             return {"url": _APP_HTML}
-        if _backend_reachable(_LOGIN_URL):
-            return {"url": _LOGIN_URL}
-        return {"html": _connection_error_html(_LOGIN_URL)}
+        if _backend_reachable(BROWSETERM_LOCAL_URL):
+            return {"url": _LOGIN_START_HTML}
+        return {"html": _connection_error_html(BROWSETERM_LOCAL_URL)}
 
     def _device_token_is_valid(self) -> bool:
         token = self._keychain.get_device_token()
@@ -130,76 +143,62 @@ class DesktopApp:
             return not e.is_auth_failure and e.status_code != 404
 
     def _handle_retry_login(self) -> None:
-        self._go_to_login()
+        self._go_to_login_start()
 
-    def _go_to_login(self) -> None:
+    def _go_to_login_start(self) -> None:
         if self._window is None:
             return
-        if _backend_reachable(_LOGIN_URL):
-            self._window.load_url(_LOGIN_URL)
+        if _backend_reachable(BROWSETERM_LOCAL_URL):
+            self._window.load_url(_LOGIN_START_HTML)
         else:
-            self._window.load_html(_connection_error_html(_LOGIN_URL))
+            self._window.load_html(_connection_error_html(BROWSETERM_LOCAL_URL))
 
-    def _on_loaded(self) -> None:
-        if self._authenticated:
+    def _handle_start_login(self) -> None:
+        '''Kicks off the system-browser login flow (see module docstring) in a background
+        thread - the loopback server blocks waiting for the callback, and this must never block
+        the WebView's own event loop.'''
+        if self._login_in_progress:
             return
-        current_url = self._window.get_current_url() or ""
-        parsed = urlparse(current_url)
-        if parsed.netloc != _LOCAL_NETLOC or parsed.path != "/":
-            return  # not yet past OAuth back to Local's home page
+        self._login_in_progress = True
+        threading.Thread(target=self._run_login_flow, daemon=True).start()
 
-        session_cookie, csrf_token = self._extract_cookies()
-        if not session_cookie:
-            return
+    def _run_login_flow(self) -> None:
         try:
-            self._bootstrap_device(session_cookie, csrf_token)
+            server = LoopbackServer()
+            server.start()
+            login_url = (
+                f"{BROWSETERM_LOCAL_URL}/login?"
+                f"{urlencode({'target': 'desktop', 'desktop_port': server.port})}"
+            )
+            webbrowser.open(login_url)
+            bootstrap_code = server.wait_for_code(DESKTOP_LOGIN_TIMEOUT_SECONDS)
+            if not bootstrap_code:
+                self._show_login_error("Login timed out or was cancelled. Please try again.")
+                return
+            result = redeem_device_bootstrap(bootstrap_code, detect_hardware())
         except (CloudClientError, httpx.HTTPError) as e:
             message = getattr(e, "message", str(e))
-            self._window.load_url(f"{_LOGIN_URL}?{urlencode({'auth_result': 'error', 'error_message': message})}")
+            self._show_login_error(message)
             return
+        finally:
+            self._login_in_progress = False
 
-        self._authenticated = True
-        self._window.load_url(_APP_HTML)
-        self._start_heartbeat()
-
-    def _bootstrap_device(self, session_cookie: str, csrf_token: Optional[str]) -> None:
-        '''Session-cookie -> one-time bootstrap code (Local) -> device token (Cloud). Raises
-        CloudClientError/httpx.HTTPError on any failure - caller decides what to show.'''
-        headers = {"X-CSRF-Token": csrf_token} if csrf_token else {}
-        response = httpx.post(
-            f"{BROWSETERM_LOCAL_URL}/device/bootstrap",
-            cookies={SESSION_COOKIE_NAME: session_cookie},
-            headers=headers,
-            timeout=10.0,
-        )
-        if response.status_code != 200:
-            message = response.json().get("error", response.text) if response.content else response.reason_phrase
-            raise CloudClientError(response.status_code, message)
-        bootstrap_code = response.json()["code"]
-
-        result = redeem_device_bootstrap(bootstrap_code, detect_hardware())
         self._keychain.set_device_token(result["device_token"])
         self._state.device_id = result["device"]["id"]
         self._state.device_name = result["device"]["device_name"]
         self._state.save()
+        self._authenticated = True
+        if self._window is not None:
+            self._window.load_url(_APP_HTML)
+        self._start_heartbeat()
 
-    def _extract_cookies(self) -> tuple[Optional[str], Optional[str]]:
-        try:
-            cookies = self._window.get_cookies()
-        except Exception:
-            return None, None
-        session_value, csrf_value = None, None
-        for cookie in cookies:
-            try:
-                items = cookie.items()
-            except AttributeError:
-                continue
-            for name, morsel in items:
-                if name == SESSION_COOKIE_NAME:
-                    session_value = morsel.value
-                elif name == CSRF_COOKIE_NAME:
-                    csrf_value = morsel.value
-        return session_value, csrf_value
+    def _show_login_error(self, message: str) -> None:
+        if self._window is None:
+            return
+        self._window.evaluate_js(
+            "document.getElementById('status').textContent = " + json.dumps(message) + ";"
+            "document.getElementById('loginBtn').disabled = false;"
+        )
 
     def _start_heartbeat(self) -> None:
         if self._heartbeat_thread is not None:
@@ -225,21 +224,21 @@ class DesktopApp:
         self._authenticated = False
         self._keychain.delete_device_token()
         self._state.clear()
-        self._go_to_login()
+        self._go_to_login_start()
 
     def _handle_logout(self) -> None:
-        '''Clears the device credential and returns to login. Does NOT call Local's /logout: by
-        the time app.html is showing, this app no longer holds Local's session cookie (P07 -
-        it was only ever used transiently for bootstrap, see the module docstring), so there is
-        nothing to send that endpoint. Any lingering browser session is left to expire on its own
-        TTL rather than being explicitly revoked - a documented trade-off, not an oversight.'''
+        '''Clears the device credential and returns to the login-start page. Does NOT call
+        Local's /logout: this app never holds Local's session cookie at all (the whole login flow
+        happens in the system browser, in its own cookie jar this process never touches) - see the
+        module docstring. Any lingering browser session there is left to expire on its own TTL
+        rather than being explicitly revoked - a documented trade-off, not an oversight.'''
         self._heartbeat_stop.set()
         self._heartbeat_thread = None
         self._heartbeat_stop = threading.Event()
         self._authenticated = False
         self._keychain.delete_device_token()
         self._state.clear()
-        self._go_to_login()
+        self._go_to_login_start()
 
 
 def run() -> None:

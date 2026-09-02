@@ -26,6 +26,12 @@ CSRF_COOKIE_NAME: str = "csrf_token"
 # credential, independent of the browser session -- see desktop/app.py's module docstring).
 DEVICE_HEARTBEAT_INTERVAL_SECONDS: int = 25 * 60
 
+# How long to wait for the system-browser login (OAuth + Local login + device bootstrap) to
+# complete and redirect back to the local loopback server before giving up (desktop/app.py,
+# desktop/loopback_server.py). Generous -- this covers actual human time spent on a Google/GitHub
+# consent screen, not just network latency.
+DESKTOP_LOGIN_TIMEOUT_SECONDS: float = 5 * 60
+
 # Where the last-activated device id (not secret - just an identifier) is persisted across app
 # restarts, so the Device page can show it immediately. The device credential itself lives only
 # in macOS Keychain (desktop/keychain.py), never here.
