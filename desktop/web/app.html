@@ -67,6 +67,59 @@
 
             <button class="activate-btn" id="activateBtn">Activate</button>
             <div class="error-message" id="errorMessage"></div>
+
+            <h1 class="section-title">Cluster</h1>
+
+            <div class="cluster-card">
+                <div class="slider-row">
+                    <div class="slider-label">
+                        <span>CPU</span>
+                        <span class="slider-value" id="cpuValue">-</span>
+                    </div>
+                    <input type="range" class="slider" id="cpuSlider" min="1" max="1" step="1">
+                </div>
+                <div class="slider-row">
+                    <div class="slider-label">
+                        <span>Memory</span>
+                        <span class="slider-value" id="memoryValue">-</span>
+                    </div>
+                    <input type="range" class="slider" id="memorySlider" min="1" max="1" step="1">
+                </div>
+                <div class="slider-row">
+                    <div class="slider-label">
+                        <span>Storage</span>
+                        <span class="slider-value" id="storageValue">-</span>
+                    </div>
+                    <input type="range" class="slider" id="storageSlider" min="5" max="5" step="5">
+                </div>
+            </div>
+
+            <div class="status-row">
+                <span id="clusterStatusBadge" class="status-badge not_registered">-</span>
+            </div>
+
+            <div class="cluster-buttons">
+                <button class="activate-btn" id="clusterBtn">Setup</button>
+                <button class="activate-btn secondary-btn" id="openBrowserBtn" hidden>Open in Browser</button>
+            </div>
+            <div class="error-message" id="clusterError"></div>
+
+            <div class="pod-table-wrap" id="podTableWrap" hidden>
+                <table class="pod-table">
+                    <thead>
+                        <tr>
+                            <th>Namespace</th>
+                            <th>Pod</th>
+                            <th>Ready</th>
+                            <th>Status</th>
+                            <th>Restarts</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody id="podTableBody"></tbody>
+                </table>
+                <p class="pod-table-empty" id="podTableEmpty" hidden>No pods yet.</p>
+            </div>
         </div>
     </main>
 

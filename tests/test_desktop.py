@@ -180,7 +180,7 @@ def test_device_token_scoped_calls_succeed_and_wrong_token_rejected(stub_server)
 def test_api_activate_device_without_token_returns_friendly_error():
     state = DesktopState()
     keychain = _FakeKeychain()
-    api = Api(state, keychain, on_logout=lambda: None, on_retry_login=lambda: None, on_start_login=lambda: None)
+    api = Api(state, keychain, on_logout=lambda: None, on_retry_login=lambda: None, on_start_login=lambda provider: None)
     result = api.activate_device()
     assert result["status"] == "not_registered"
     assert "log" in result["error"].lower()
@@ -200,7 +200,7 @@ def test_api_device_info_and_activate_with_valid_token(stub_server):
 
     import desktop.api as api_module
 
-    api = Api(state, keychain, on_logout=lambda: None, on_retry_login=lambda: None, on_start_login=lambda: None)
+    api = Api(state, keychain, on_logout=lambda: None, on_retry_login=lambda: None, on_start_login=lambda provider: None)
     # Point this Api's CloudClient calls at the stub by monkeypatching the default base_url.
     orig_cloud_client = api_module.CloudClient
 
@@ -224,7 +224,7 @@ def test_logout_callback_invoked():
     state = DesktopState()
     keychain = _FakeKeychain()
     keychain.set_device_token("bst_device_x")
-    api = Api(state, keychain, on_logout=lambda: called.append(True), on_retry_login=lambda: None, on_start_login=lambda: None)
+    api = Api(state, keychain, on_logout=lambda: called.append(True), on_retry_login=lambda: None, on_start_login=lambda provider: None)
     api.logout()
     assert called == [True]
 
@@ -233,7 +233,7 @@ def test_retry_login_callback_invoked():
     called = []
     state = DesktopState()
     keychain = _FakeKeychain()
-    api = Api(state, keychain, on_logout=lambda: None, on_retry_login=lambda: called.append(True), on_start_login=lambda: None)
+    api = Api(state, keychain, on_logout=lambda: None, on_retry_login=lambda: called.append(True), on_start_login=lambda provider: None)
     api.retry_login()
     assert called == [True]
 
@@ -242,22 +242,27 @@ def test_start_login_callback_invoked():
     called = []
     state = DesktopState()
     keychain = _FakeKeychain()
-    api = Api(state, keychain, on_logout=lambda: None, on_retry_login=lambda: None, on_start_login=lambda: called.append(True))
+    api = Api(state, keychain, on_logout=lambda: None, on_retry_login=lambda: None, on_start_login=lambda p: called.append(p))
+    api.start_login("github")
+    assert called == ["github"]
+
+
+def test_start_login_defaults_to_google():
+    called = []
+    state = DesktopState()
+    keychain = _FakeKeychain()
+    api = Api(state, keychain, on_logout=lambda: None, on_retry_login=lambda: None, on_start_login=lambda p: called.append(p))
     api.start_login()
-    assert called == [True]
+    assert called == ["google"]
 
 
 def test_full_desktop_login_flow_round_trip(monkeypatch):
-    '''End-to-end (minus the real OAuth/browser): DesktopApp._run_login_flow starts a real
-    LoopbackServer, "opens the browser" (mocked - we instead simulate the system browser landing
-    on the loopback callback, exactly like Local's auth_callback would redirect it to), and on
-    receiving the bootstrap code redeems it and persists the device token/state - proving the
-    whole chain (app.py <-> loopback_server.py <-> cloud_client.py <-> keychain/state) actually
-    fits together, not just each piece in isolation.'''
+    '''End-to-end (minus the real OAuth/browser): DesktopApp._run_login_flow calls (mocked)
+    start_device_login, "opens the browser" to the verification URL (mocked - just captured),
+    then polls (mocked) poll_device_login twice (pending, then complete) and persists the device
+    token/state - proving the whole chain (app.py <-> cloud_client.py <-> keychain/state) fits
+    together for the device-grant flow, not just each piece in isolation.'''
     import threading
-    import time
-
-    import httpx
 
     import desktop.app as app_module
 
@@ -272,31 +277,94 @@ def test_full_desktop_login_flow_round_trip(monkeypatch):
     app._heartbeat_thread = None
     app._window = None  # no real WebView in this test - guarded by `if self._window is not None`
 
-    captured_url = {}
+    captured = {}
+
+    def fake_start_device_login(provider="google"):
+        return {
+            "provider": "google", "device_code": "device-code-xyz", "user_code": "ABCD-1234",
+            "verification_uri": "https://google.com/device", "verification_uri_complete": None,
+            "expires_in": 30, "interval": 0,
+        }
+
+    poll_responses = iter([
+        {"status": "pending"},
+        {
+            "status": "complete",
+            "device_token": "bst_device_full_flow",
+            "device": {"id": "device-9", "device_name": "test-mac"},
+        },
+    ])
+
+    def fake_poll_device_login(device_code, device, provider="google"):
+        assert device_code == "device-code-xyz"
+        return next(poll_responses)
 
     def fake_open(url):
-        captured_url["url"] = url
-        # simulate the system browser hitting the loopback callback once Local finishes
-        def _hit_callback():
-            time.sleep(0.05)
-            port = url.rsplit("desktop_port=", 1)[1]
-            httpx.get(f"http://127.0.0.1:{port}/callback", params={"code": "bootstrap-code-xyz"})
-        threading.Thread(target=_hit_callback, daemon=True).start()
-
-    def fake_redeem(code, device, base_url=None):
-        assert code == "bootstrap-code-xyz"
-        return {"device_token": "bst_device_full_flow", "device": {"id": "device-9", "device_name": device["device_name"]}}
+        captured["opened_url"] = url
 
     monkeypatch.setattr(app_module, "webbrowser", type("_W", (), {"open": staticmethod(fake_open)}))
-    monkeypatch.setattr(app_module, "redeem_device_bootstrap", fake_redeem)
-    monkeypatch.setattr(app_module, "detect_hardware", lambda: {"device_name": "test-mac", "os": "Darwin"})
+    monkeypatch.setattr(app_module, "start_device_login", fake_start_device_login)
+    monkeypatch.setattr(app_module, "poll_device_login", fake_poll_device_login)
+    monkeypatch.setattr(app_module, "detect_hardware", lambda: {
+        "device_name": "test-mac", "os": "Darwin", "architecture": "arm64", "runtime_version": "15.0",
+        "total_cpu": 8, "total_memory_bytes": 16 * 1024 ** 3, "total_storage_bytes": 400 * 1024 ** 3,
+        "gpu_info": None,
+    })
+    monkeypatch.setattr(app_module, "_DEFAULT_POLL_INTERVAL_SECONDS", 0)
     monkeypatch.setattr(app_module, "DESKTOP_LOGIN_TIMEOUT_SECONDS", 5.0)
 
-    app._run_login_flow()
+    app._run_login_flow("google")
 
-    assert "target=desktop" in captured_url["url"]
+    assert captured["opened_url"] == "https://google.com/device"
     assert keychain.get_device_token() == "bst_device_full_flow"
     assert state.device_id == "device-9"
     assert state.device_name == "test-mac"
     assert app._authenticated is True
     assert app._login_in_progress is False
+
+
+def test_run_login_flow_threads_the_clicked_provider_through(monkeypatch):
+    '''login_start.html now has two buttons (Google/GitHub) - clicking one must reach both
+    start_device_login and every poll_device_login call with that same provider, not a
+    hardcoded "google".'''
+    import threading
+
+    import desktop.app as app_module
+
+    app = app_module.DesktopApp.__new__(app_module.DesktopApp)
+    app._state = DesktopState()
+    app._keychain = _FakeKeychain()
+    app._authenticated = False
+    app._login_in_progress = False
+    app._heartbeat_stop = threading.Event()
+    app._heartbeat_thread = None
+    app._window = None
+
+    seen_providers = []
+
+    def fake_start_device_login(provider):
+        seen_providers.append(("start", provider))
+        return {
+            "provider": provider, "device_code": "gh-device-code", "user_code": "WXYZ-9876",
+            "verification_uri": "https://github.com/login/device", "verification_uri_complete": None,
+            "expires_in": 30, "interval": 0,
+        }
+
+    def fake_poll_device_login(device_code, device, provider="google"):
+        seen_providers.append(("poll", provider))
+        return {"status": "complete", "device_token": "bst_device_gh", "device": {"id": "device-9", "device_name": "test-mac"}}
+
+    monkeypatch.setattr(app_module, "webbrowser", type("_W", (), {"open": staticmethod(lambda url: None)}))
+    monkeypatch.setattr(app_module, "start_device_login", fake_start_device_login)
+    monkeypatch.setattr(app_module, "poll_device_login", fake_poll_device_login)
+    monkeypatch.setattr(app_module, "detect_hardware", lambda: {
+        "device_name": "test-mac", "os": "Darwin", "architecture": "arm64", "runtime_version": "15.0",
+        "total_cpu": 8, "total_memory_bytes": 16 * 1024 ** 3, "total_storage_bytes": 400 * 1024 ** 3,
+        "gpu_info": None,
+    })
+    monkeypatch.setattr(app_module, "_DEFAULT_POLL_INTERVAL_SECONDS", 0)
+    monkeypatch.setattr(app_module, "DESKTOP_LOGIN_TIMEOUT_SECONDS", 5.0)
+
+    app._run_login_flow("github")
+
+    assert seen_providers == [("start", "github"), ("poll", "github")]

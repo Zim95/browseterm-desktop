@@ -11,6 +11,7 @@ python = ">=3.11,<3.12"
 pywebview = {version = "^5.0", markers = "sys_platform == 'darwin'", extras = ["cocoa"]}
 httpx = "^0.27.0"
 keyring = "^25.0"
+ipython = "8.1.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.0"

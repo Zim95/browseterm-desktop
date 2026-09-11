@@ -233,6 +233,24 @@ body {
     cursor: default;
 }
 
+.cluster-buttons {
+    display: flex;
+    gap: 0.75rem;
+    align-items: center;
+}
+
+.secondary-btn {
+    background: white;
+    color: var(--active-color);
+    border: 1px solid var(--active-color);
+}
+
+.secondary-btn:hover:not(:disabled) {
+    background: rgba(99, 122, 185, 0.08);
+    color: var(--active-color);
+    box-shadow: none;
+}
+
 .error-message {
     margin-top: 1rem;
     color: #C0392B;
@@ -241,4 +259,92 @@ body {
 
 .loading {
     color: var(--text-secondary);
+}
+
+.section-title {
+    font-size: 1.6rem;
+    margin: 2rem 0 1.5rem;
+    padding-top: 1.5rem;
+    border-top: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+.cluster-card {
+    display: flex;
+    flex-direction: column;
+    gap: 1.25rem;
+    margin-bottom: 1.5rem;
+}
+
+.slider-row {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+}
+
+.slider-label {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.9rem;
+    font-weight: 500;
+}
+
+.slider-value {
+    color: var(--text-secondary);
+    font-weight: 400;
+}
+
+.slider {
+    width: 100%;
+    accent-color: var(--active-color);
+}
+
+.slider:disabled {
+    opacity: 0.5;
+}
+
+.pod-table-wrap {
+    margin-top: 1.5rem;
+}
+
+.pod-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.9rem;
+}
+
+.pod-table th {
+    text-align: left;
+    padding: 0.5rem 0.75rem;
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+.pod-table td {
+    padding: 0.5rem 0.75rem;
+    border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+}
+
+.pod-table-empty {
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+    padding: 0.75rem;
+}
+
+.pod-restart-btn {
+    padding: 0.3rem 0.75rem;
+    border: none;
+    border-radius: 5px;
+    font-size: 0.8rem;
+    font-weight: 500;
+    cursor: pointer;
+    background: var(--active-color);
+    color: white;
+    transition: var(--transition);
+}
+
+.pod-restart-btn:hover {
+    background: #4A5A8A;
 }

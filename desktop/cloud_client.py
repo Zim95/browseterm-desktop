@@ -7,6 +7,19 @@ session cookie. This app never holds a Google/GitHub secret and never performs O
 (p07.md section 19/39) - the only OAuth-adjacent thing it does is the one-time bootstrap
 redemption below, which trades a short-lived bootstrap code (obtained from Local, itself gated on
 the already-authenticated WebView session) for the device token.
+
+Login flow (see the device-auth follow-up to p07.md): `start_device_login`/`poll_device_login`
+below are this app's actual login path now, an OAuth Device Authorization Grant (RFC 8628)
+against Cloud's own /auth/device/start and /auth/device/poll. Neither this app nor these two
+functions ever talk to Google/GitHub directly, and neither needs `browseterm-server-local`
+reachable at all - both properties matter here specifically: this is what breaks the login/
+cluster chicken-and-egg where Local's own presence in the old browser-redirect flow meant no
+cluster -> Local unreachable -> can't log in -> can't reach the button that creates the cluster.
+`redeem_device_bootstrap` above is no longer called by this app's own login flow (see
+desktop/app.py) - Cloud's /auth/device-bootstrap/redeem endpoint it talks to still exists, so the
+function is left in place rather than deleted, but nothing here exercises it any more outside its
+own direct tests. GitHub device flow is not implemented yet (blocked on its own OAuth-console
+follow-up, tracked separately) - only "google" is a valid provider today.
 """
 from typing import Any, Optional
 
@@ -48,6 +61,52 @@ def redeem_device_bootstrap(code: str, device: dict[str, Any], base_url: str = B
             message = response.text or response.reason_phrase
         raise CloudClientError(response.status_code, message)
     return response.json()
+
+
+def start_device_login(provider: str = "google", base_url: str = BROWSETERM_CLOUD_API_URL) -> dict:
+    """POST /auth/device/start -- public, starts an OAuth Device Authorization Grant (RFC 8628)
+    against `provider` on Cloud's side. Returns {"provider", "device_code", "user_code",
+    "verification_uri", "verification_uri_complete", "expires_in", "interval"}. Raises
+    CloudClientError on any transport failure or non-2xx (Cloud, not this app, holds the
+    provider's device-flow client secret -- see cloud's src.authentication.provider_oauth_service.
+    GoogleDeviceAuthService)."""
+    try:
+        response = httpx.post(
+            f"{base_url.rstrip('/')}/auth/device/start", json={"provider": provider}, timeout=10.0
+        )
+    except httpx.HTTPError as e:
+        raise CloudClientError(0, str(e)) from e
+    if response.status_code < 200 or response.status_code >= 300:
+        try:
+            message = response.json().get("error", response.text)
+        except Exception:
+            message = response.text or response.reason_phrase
+        raise CloudClientError(response.status_code, message)
+    return response.json()
+
+
+def poll_device_login(
+    device_code: str, device: dict[str, Any], provider: str = "google", base_url: str = BROWSETERM_CLOUD_API_URL,
+) -> dict:
+    """POST /auth/device/poll -- a single poll attempt. Always returns Cloud's JSON body, whatever
+    its HTTP status: {"status": "pending"|"expired"|"denied"|"error"} while login hasn't
+    completed, or {"status": "complete", "device": {...}, "device_token": "bst_device_..."} once
+    it has -- the caller's polling loop (desktop/app.py) branches on "status", not on HTTP status,
+    since a pending/expired/denied poll is a normal, expected outcome here, not a failure of this
+    call. CloudClientError is raised only for an actual transport failure or a response with no
+    parseable JSON body at all."""
+    try:
+        response = httpx.post(
+            f"{base_url.rstrip('/')}/auth/device/poll",
+            json={"provider": provider, "device_code": device_code, "device": device},
+            timeout=10.0,
+        )
+    except httpx.HTTPError as e:
+        raise CloudClientError(0, str(e)) from e
+    try:
+        return response.json()
+    except Exception:
+        raise CloudClientError(response.status_code, response.text or response.reason_phrase)
 
 
 class CloudClient:
