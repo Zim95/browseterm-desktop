@@ -115,7 +115,7 @@ class Api:
             # cluster-create cycle only to fail deploying the actual workloads onto it.
             local_stack.check_prerequisites()
             cluster_manager.create_cluster(cpu, memory_gb)
-            local_stack.deploy(self._state.device_id)
+            local_stack.deploy(self._state.device_id, self._keychain.get_device_token())
         except ClusterError as e:
             status = self.cluster_status()
             status["error"] = str(e)

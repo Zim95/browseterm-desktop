@@ -228,6 +228,25 @@ def _ensure_internal_api_token_secret() -> None:
     ])
 
 
+def _ensure_device_credentials_secret(device_id: str, device_token: str) -> None:
+    """remotetunelling.md Phase 3: tunnel_registrar authenticates to Cloud with THIS device's own
+    Bearer token - deliberately not the shared browseterm-internal-api-token Secret every other
+    workload here uses. The token itself lives only in this process's Keychain (see
+    desktop/keychain.py) until now; this is the one place it gets copied into the cluster, and
+    only as a Secret, never a plain env var/config file on disk anywhere in this repo."""
+    if not device_id or not device_token:
+        raise LocalStackError(
+            "no device_id/device_token available - log in via Desktop before setting up the "
+            "Cluster (tunnel_registrar needs this device's own Bearer credential)"
+        )
+    _create_or_update([
+        "kubectl", "--context", KUBE_CONTEXT, "-n", NAMESPACE, "create", "secret", "generic",
+        "device-credentials",
+        f"--from-literal=DEVICE_ID={device_id}",
+        f"--from-literal=DEVICE_TOKEN={device_token}",
+    ])
+
+
 def _ensure_db_placeholder_secret() -> None:
     """browseterm-server-local's own P06 note (SETUP-LOCAL.md step 3): these values are never
     actually used for a real Postgres connection in the V2 local-cluster architecture -- the
@@ -355,15 +374,17 @@ def _deploy_reaper(device_id: str, cloud_ingress_host_ip: str) -> None:
     _make("reaper", "dev_setup")
 
 
-def deploy(device_id: Optional[str]) -> None:
+def deploy(device_id: Optional[str], device_token: Optional[str] = None) -> None:
     """Deploys every local-stack workload in the order each one's own manifest requires (see
     module docstring): ingress-nginx first (SETUP-LOCAL.md step 2 -- nothing Ingress-routed is
     reachable at all until Traefik is out of the way and ingress-nginx is up); minio and
     cert-manager are self-contained; container-maker needs both of those plus the
-    internal-api-token Secret; socket-ssh has no dependencies at all; browseterm-server-local/
-    status_monitor/reaper each need only the internal-api-token Secret (reaper additionally needs
-    device_id, which is already known post-login by the time this Cluster-section button is
-    reachable at all).
+    internal-api-token Secret; socket-ssh now also needs the device-credentials Secret (its
+    ngrok-agent Deployment's tunnel_registrar sidecar, remotetunelling.md Phase 3, authenticates
+    to Cloud with this device's own Bearer token, never the shared internal-api-token);
+    browseterm-server-local/status_monitor/reaper each need only the internal-api-token Secret
+    (reaper additionally needs device_id, which is already known post-login by the time this
+    Cluster-section button is reachable at all).
 
     Every workload that calls Cloud's API also needs `cloud_ingress_host_ip` for the same
     hostAliases override browseterm-server-local's own manifest already required -- discovered
@@ -381,6 +402,7 @@ def deploy(device_id: Optional[str]) -> None:
     _ensure_ingress_nginx()
     _ensure_namespace()
     _ensure_internal_api_token_secret()
+    _ensure_device_credentials_secret(device_id or "", device_token or "")
     _ensure_db_placeholder_secret()
     _deploy_minio()
     _deploy_cert_manager()

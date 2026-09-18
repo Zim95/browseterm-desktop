@@ -216,6 +216,7 @@ def test_deploy_calls_every_step_in_dependency_order(monkeypatch):
     calls = []
     steps = [
         "_ensure_ingress_nginx", "_ensure_namespace", "_ensure_internal_api_token_secret",
+        "_ensure_device_credentials_secret",
         "_ensure_db_placeholder_secret", "_deploy_minio", "_deploy_cert_manager",
         "_deploy_container_maker", "_deploy_socket_ssh",
     ]
@@ -227,12 +228,13 @@ def test_deploy_calls_every_step_in_dependency_order(monkeypatch):
     monkeypatch.setattr(local_stack, "_deploy_reaper", lambda device_id, ip: calls.append(("_deploy_reaper", device_id, ip)))
     monkeypatch.setattr(local_stack, "_run", lambda *a, **k: calls.append(("kubectl_use_context",)))
 
-    local_stack.deploy("device-123")
+    local_stack.deploy("device-123", "device-token-abc")
 
     assert calls == [
         ("kubectl_use_context",),
         "_ensure_ingress_nginx",
-        "_ensure_namespace", "_ensure_internal_api_token_secret", "_ensure_db_placeholder_secret",
+        "_ensure_namespace", "_ensure_internal_api_token_secret", "_ensure_device_credentials_secret",
+        "_ensure_db_placeholder_secret",
         "_deploy_minio", "_deploy_cert_manager",
         "_resolve_cloud_ingress_host_ip",
         "_deploy_container_maker", "_deploy_socket_ssh",
@@ -251,3 +253,29 @@ def test_deploy_raises_before_any_step_if_prerequisites_fail(monkeypatch):
         local_stack.deploy("device-123")
 
     assert called == []
+
+
+def test_ensure_device_credentials_secret_creates_it_from_the_keychain_token(monkeypatch):
+    fake = _fake_run()
+    monkeypatch.setattr(cluster_manager.subprocess, "run", fake)
+
+    local_stack._ensure_device_credentials_secret("device-123", "token-abc")
+
+    # _create_or_update's own idempotent-apply pattern: render via `create --dry-run=client -o
+    # yaml` first, then `kubectl apply -f -` the result - see its own docstring.
+    assert fake.calls[0]["cmd"] == [
+        "kubectl", "--context", local_stack.KUBE_CONTEXT, "-n", local_stack.NAMESPACE,
+        "create", "secret", "generic", "device-credentials",
+        "--from-literal=DEVICE_ID=device-123", "--from-literal=DEVICE_TOKEN=token-abc",
+        "--dry-run=client", "-o", "yaml",
+    ]
+
+
+def test_ensure_device_credentials_secret_rejects_missing_token() -> None:
+    """tunnel_registrar has nothing to authenticate with otherwise - fail loudly here rather than
+    silently deploying a sidecar that will never successfully register a tunnel."""
+    with pytest.raises(LocalStackError, match="device_id/device_token"):
+        local_stack._ensure_device_credentials_secret("device-123", "")
+
+    with pytest.raises(LocalStackError, match="device_id/device_token"):
+        local_stack._ensure_device_credentials_secret("", "token-abc")

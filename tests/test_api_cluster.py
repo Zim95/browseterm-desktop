@@ -55,7 +55,7 @@ def _fake_local_stack(monkeypatch):
     every test in this file except the ones dedicated to this wiring itself treats it as a no-op,
     the same way cluster_manager's own real k3d/docker/kubectl calls are mocked per-test below."""
     monkeypatch.setattr(api_module.local_stack, "check_prerequisites", lambda: None)
-    monkeypatch.setattr(api_module.local_stack, "deploy", lambda device_id: None)
+    monkeypatch.setattr(api_module.local_stack, "deploy", lambda device_id, device_token=None: None)
 
 
 def _make_api(state=None, keychain=None):
@@ -174,7 +174,10 @@ def test_setup_cluster_deploys_local_stack_with_device_id_after_cluster_creation
     calls = []
     monkeypatch.setattr(api_module.cluster_manager, "create_cluster", lambda cpu, mem: calls.append(("create_cluster", cpu, mem)))
     monkeypatch.setattr(api_module.cluster_manager, "cluster_exists", lambda: True)
-    monkeypatch.setattr(api_module.local_stack, "deploy", lambda device_id: calls.append(("deploy", device_id)))
+    monkeypatch.setattr(
+        api_module.local_stack, "deploy",
+        lambda device_id, device_token=None: calls.append(("deploy", device_id)),
+    )
 
     state = DesktopState(device_id="device-1")
     _make_api(state=state).setup_cluster(cpu=2, memory_gb=4, storage_gb=50)
@@ -200,7 +203,7 @@ def test_setup_cluster_surfaces_local_stack_deploy_failure(monkeypatch):
     monkeypatch.setattr(api_module.cluster_manager, "create_cluster", lambda cpu, mem: None)
     monkeypatch.setattr(api_module.cluster_manager, "cluster_exists", lambda: True)
 
-    def raise_error(device_id):
+    def raise_error(device_id, device_token=None):
         raise LocalStackError("container-maker: make prod_setup failed")
     monkeypatch.setattr(api_module.local_stack, "deploy", raise_error)
 
