@@ -224,7 +224,7 @@ def test_deploy_calls_every_step_in_dependency_order(monkeypatch):
         monkeypatch.setattr(local_stack, step, lambda *a, name=step: calls.append(name))
     monkeypatch.setattr(local_stack, "_resolve_cloud_ingress_host_ip", lambda: calls.append("_resolve_cloud_ingress_host_ip") or "1.2.3.4")
     monkeypatch.setattr(local_stack, "_deploy_browseterm_server_local", lambda ip: calls.append(("_deploy_browseterm_server_local", ip)))
-    monkeypatch.setattr(local_stack, "_deploy_status_monitor", lambda ip: calls.append(("_deploy_status_monitor", ip)))
+    monkeypatch.setattr(local_stack, "_deploy_status_monitor", lambda device_id, ip: calls.append(("_deploy_status_monitor", device_id, ip)))
     monkeypatch.setattr(local_stack, "_deploy_reaper", lambda device_id, ip: calls.append(("_deploy_reaper", device_id, ip)))
     monkeypatch.setattr(local_stack, "_run", lambda *a, **k: calls.append(("kubectl_use_context",)))
 
@@ -239,7 +239,7 @@ def test_deploy_calls_every_step_in_dependency_order(monkeypatch):
         "_resolve_cloud_ingress_host_ip",
         "_deploy_container_maker", "_deploy_socket_ssh",
         ("_deploy_browseterm_server_local", "1.2.3.4"),
-        ("_deploy_status_monitor", "1.2.3.4"),
+        ("_deploy_status_monitor", "device-123", "1.2.3.4"),
         ("_deploy_reaper", "device-123", "1.2.3.4"),
     ]
 

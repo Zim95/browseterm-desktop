@@ -353,11 +353,15 @@ def _deploy_browseterm_server_local(cloud_ingress_host_ip: str) -> None:
     )
 
 
-def _deploy_status_monitor(cloud_ingress_host_ip: str) -> None:
+def _deploy_status_monitor(device_id: str, cloud_ingress_host_ip: str) -> None:
     _write_env_mk("status_monitor", {
         "NAMESPACE": NAMESPACE, "REPO_NAME": DOCKER_HUB_REPO_NAME,
         "BROWSETERM_CLOUD_API_URL": BROWSETERM_CLOUD_API_URL,
         "CLOUD_INGRESS_HOST": CLOUD_INGRESS_HOST, "CLOUD_INGRESS_HOST_IP": cloud_ingress_host_ip,
+        # Durability-in-terminals safety net (status_monitor/src/resource_reconciler.py): lets
+        # the periodic reconciler ask Cloud "what does the DB think is Running for ME" - plain,
+        # non-secret identifier, same as reaper's own DEVICE_ID below.
+        "DEVICE_ID": device_id,
     })
     _make("status_monitor", "dev_setup")
 
@@ -382,9 +386,10 @@ def deploy(device_id: Optional[str], device_token: Optional[str] = None) -> None
     internal-api-token Secret; socket-ssh now also needs the device-credentials Secret (its
     ngrok-agent Deployment's tunnel_registrar sidecar, remotetunelling.md Phase 3, authenticates
     to Cloud with this device's own Bearer token, never the shared internal-api-token);
-    browseterm-server-local/status_monitor/reaper each need only the internal-api-token Secret
-    (reaper additionally needs device_id, which is already known post-login by the time this
-    Cluster-section button is reachable at all).
+    browseterm-server-local needs only the internal-api-token Secret; status_monitor and reaper
+    additionally need device_id (plain, non-secret config, not a Bearer credential - both already
+    authenticate as trusted system callers via the internal-api-token), which is already known
+    post-login by the time this Cluster-section button is reachable at all.
 
     Every workload that calls Cloud's API also needs `cloud_ingress_host_ip` for the same
     hostAliases override browseterm-server-local's own manifest already required -- discovered
@@ -410,5 +415,5 @@ def deploy(device_id: Optional[str], device_token: Optional[str] = None) -> None
     _deploy_container_maker(cloud_ingress_host_ip)
     _deploy_socket_ssh(cloud_ingress_host_ip)
     _deploy_browseterm_server_local(cloud_ingress_host_ip)
-    _deploy_status_monitor(cloud_ingress_host_ip)
+    _deploy_status_monitor(device_id or "", cloud_ingress_host_ip)
     _deploy_reaper(device_id or "", cloud_ingress_host_ip)
