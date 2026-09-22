@@ -1,22 +1,26 @@
 # browseterm-desktop
 
-Two processes, deliberately separate rather than one thing trying to be both:
+Three entrypoints, deliberately separate rather than one thing trying to be both:
 
-- **The GUI app** (`main.py` -> `desktop/app.py`, built with `pywebview`): login (an OAuth Device
-  Authorization Grant against Cloud directly - see "Login" below), a Cluster section (stands
-  up/tears down a real **Multipass VM running k3s** + the current local-stack workloads, with live
-  step-by-step Setup progress - see "Cluster section"), and a Device page (hardware detection +
-  activation against Cloud's Device API).
+- **The GUI app** (`main.py` -> `desktop/app.py`, built with `pywebview`, **macOS/Windows only**):
+  login (an OAuth Device Authorization Grant against Cloud directly - see "Login" below), a
+  Cluster section (stands up/tears down a real **Multipass VM running k3s** + the current
+  local-stack workloads, with live step-by-step Setup progress - see "Cluster section"), and a
+  Device page (hardware detection + activation against Cloud's Device API).
 - **The daemon** (`daemond.py` -> `desktop/daemon.py`, headless, no window): owns the device
   heartbeat and a cluster health-check loop, meant to run continuously under macOS `launchd` -
   see "Daemon" below.
+- **The headless Linux CLI** (`desktop/cli.py`, Part 18, **Linux only, no GUI dependency**):
+  `setup`/`start`/`stop`/`status`/`logs`/`configure`/`activate`/`repair`/`diagnostics`/`uninstall`
+  against a **native (no VM) k3s** install - see "Headless Linux CLI" below.
 
 ## Run it
 
 ```
 poetry install
-poetry run python main.py      # the GUI app
+poetry run python main.py      # the GUI app (macOS/Windows)
 poetry run python daemond.py   # the background daemon (see "Daemon" for running it under launchd instead)
+sudo poetry run python -m desktop.cli setup --non-interactive --cpus 4 --memory 8Gi --storage 50Gi   # headless Linux
 ```
 
 By default both point at `https://app.browseterm.puhtaeto.com` (real, live Cloud) -- override
@@ -64,6 +68,40 @@ Device Agent itself needs this specific device's own Bearer credential (not the 
 token above) - `local_stack.deploy()` copies it from this app's own Keychain storage
 (`desktop/keychain.py`) into a `browseterm-device-credential` Secret at deploy time, the one place
 it's ever written to disk/the cluster, and only as a Secret.
+
+## Headless Linux CLI (Part 18)
+
+`desktop/native_k3s.py` installs k3s **directly on the host, no VM** (unlike macOS/Windows'
+Multipass VM) - k3s's official install script, the same bundled-Traefik/servicelb-disabled flags
+and vendored gVisor sandbox install `cluster_manager.py` uses (imported directly, not duplicated -
+see that module's own docstring), then merges its kubeconfig the same "default" -> "browseterm"
+way, minus the VM-IP rewrite (this process *is* the node, `127.0.0.1:6443` is already correct).
+`desktop/local_stack.py` needs zero changes to work against it: `native_k3s.KUBE_CONTEXT` is the
+identical string `cluster_manager.KUBE_CONTEXT` is, and `local_stack.py` only ever imports that
+constant by value.
+
+`desktop/cli.py` (`python -m desktop.cli <command>` - not currently packaged as an installed
+`browseterm` console script; this repo has never been `pip install`-able as a package, matching
+`main.py`'s own plain-script invocation) provides `setup`/`start`/`stop`/`status`/`logs`/
+`configure`/`activate`/`repair`/`diagnostics`/`uninstall`. `setup` runs the same headless OAuth
+Device Authorization Grant as the GUI's own login (`desktop/cloud_client.py`'s
+`start_device_login`/`poll_device_login` - prints the verification URL/code and polls, no browser
+needed) the first time it's run with no stored device credential, then creates the cluster and
+deploys the stack exactly like the GUI's Setup button does. The device credential itself is never
+written to macOS Keychain here (there's no Keychain on a headless Linux server) -
+`desktop/linux_credential_store.py` stores it in a plain root-owned `0600` file instead (Part 4's
+own documented fallback for Linux - Secret Service/GNOME-Keyring/KWallet all require a desktop
+session and D-Bus daemon a headless server doesn't have).
+
+**Requires root** (`sudo`) for every command that touches k3s itself (`setup`/`start`/`stop`/
+`repair`/`uninstall`) - k3s's own install/service management needs it, same as the project's old
+pre-migration single-node-k3s reference setup (`scripts/setup.k3s.sh`).
+
+**Not yet run against a real Linux host** - this environment has no Linux/systemd machine to test
+against (same practical constraint Part 17's Windows support has for real Windows hardware).
+Tested the same way `cluster_manager.py` already is: unit tests against a fake command runner
+(`tests/test_native_k3s.py`, `tests/test_cli.py`) - real end-to-end verification needs an owner
+session on actual Linux hardware.
 
 ## Login: OAuth Device Authorization Grant (RFC 8628), not a WebView OAuth page
 
