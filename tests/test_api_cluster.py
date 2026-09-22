@@ -55,7 +55,7 @@ def _fake_local_stack(monkeypatch):
     every test in this file except the ones dedicated to this wiring itself treats it as a no-op,
     the same way cluster_manager's own real k3d/docker/kubectl calls are mocked per-test below."""
     monkeypatch.setattr(api_module.local_stack, "check_prerequisites", lambda: None)
-    monkeypatch.setattr(api_module.local_stack, "deploy", lambda device_id, device_token=None: None)
+    monkeypatch.setattr(api_module.local_stack, "deploy", lambda device_id, device_token=None, on_step=None: None)
 
 
 def _make_api(state=None, keychain=None):
@@ -97,7 +97,7 @@ def test_cluster_status_surfaces_cluster_manager_error(monkeypatch):
 
 def test_setup_cluster_saves_allocation_and_creates_cluster(monkeypatch):
     create_calls = []
-    monkeypatch.setattr(api_module.cluster_manager, "create_cluster", lambda cpu, mem: create_calls.append((cpu, mem)))
+    monkeypatch.setattr(api_module.cluster_manager, "create_cluster", lambda cpu, mem, storage=None, on_step=None: create_calls.append((cpu, mem)))
     monkeypatch.setattr(api_module.cluster_manager, "cluster_exists", lambda: True)
 
     state = DesktopState()
@@ -110,7 +110,7 @@ def test_setup_cluster_saves_allocation_and_creates_cluster(monkeypatch):
 
 
 def test_setup_cluster_returns_error_but_keeps_saved_allocation_on_failure(monkeypatch):
-    def raise_error(cpu, mem):
+    def raise_error(cpu, mem, storage=None, on_step=None):
         raise ClusterError("k3d cluster create failed")
     monkeypatch.setattr(api_module.cluster_manager, "create_cluster", raise_error)
     monkeypatch.setattr(api_module.cluster_manager, "cluster_exists", lambda: False)
@@ -124,7 +124,7 @@ def test_setup_cluster_returns_error_but_keeps_saved_allocation_on_failure(monke
 
 
 def test_setup_cluster_syncs_allocation_to_cloud_when_device_is_registered(monkeypatch):
-    monkeypatch.setattr(api_module.cluster_manager, "create_cluster", lambda cpu, mem: None)
+    monkeypatch.setattr(api_module.cluster_manager, "create_cluster", lambda cpu, mem, storage=None, on_step=None: None)
     monkeypatch.setattr(api_module.cluster_manager, "cluster_exists", lambda: True)
 
     fake_client = MagicMock()
@@ -144,7 +144,7 @@ def test_setup_cluster_syncs_allocation_to_cloud_when_device_is_registered(monke
 def test_setup_cluster_cloud_sync_failure_does_not_block_local_setup(monkeypatch):
     from desktop.cloud_client import CloudClientError
 
-    monkeypatch.setattr(api_module.cluster_manager, "create_cluster", lambda cpu, mem: None)
+    monkeypatch.setattr(api_module.cluster_manager, "create_cluster", lambda cpu, mem, storage=None, on_step=None: None)
     monkeypatch.setattr(api_module.cluster_manager, "cluster_exists", lambda: True)
 
     fake_client = MagicMock()
@@ -160,7 +160,7 @@ def test_setup_cluster_cloud_sync_failure_does_not_block_local_setup(monkeypatch
 
 
 def test_setup_cluster_skips_cloud_sync_when_device_not_registered(monkeypatch):
-    monkeypatch.setattr(api_module.cluster_manager, "create_cluster", lambda cpu, mem: None)
+    monkeypatch.setattr(api_module.cluster_manager, "create_cluster", lambda cpu, mem, storage=None, on_step=None: None)
     monkeypatch.setattr(api_module.cluster_manager, "cluster_exists", lambda: True)
     cloud_client_ctor = MagicMock()
     monkeypatch.setattr(api_module, "CloudClient", cloud_client_ctor)
@@ -172,11 +172,11 @@ def test_setup_cluster_skips_cloud_sync_when_device_not_registered(monkeypatch):
 
 def test_setup_cluster_deploys_local_stack_with_device_id_after_cluster_creation(monkeypatch):
     calls = []
-    monkeypatch.setattr(api_module.cluster_manager, "create_cluster", lambda cpu, mem: calls.append(("create_cluster", cpu, mem)))
+    monkeypatch.setattr(api_module.cluster_manager, "create_cluster", lambda cpu, mem, storage=None, on_step=None: calls.append(("create_cluster", cpu, mem)))
     monkeypatch.setattr(api_module.cluster_manager, "cluster_exists", lambda: True)
     monkeypatch.setattr(
         api_module.local_stack, "deploy",
-        lambda device_id, device_token=None: calls.append(("deploy", device_id)),
+        lambda device_id, device_token=None, on_step=None: calls.append(("deploy", device_id)),
     )
 
     state = DesktopState(device_id="device-1")
@@ -190,7 +190,7 @@ def test_setup_cluster_checks_local_stack_prerequisites_before_creating_cluster(
         raise LocalStackError("BROWSETERM_CLOUD_INTERNAL_API_TOKEN is not set.")
     monkeypatch.setattr(api_module.local_stack, "check_prerequisites", raise_error)
     create_calls = []
-    monkeypatch.setattr(api_module.cluster_manager, "create_cluster", lambda cpu, mem: create_calls.append(True))
+    monkeypatch.setattr(api_module.cluster_manager, "create_cluster", lambda cpu, mem, storage=None, on_step=None: create_calls.append(True))
     monkeypatch.setattr(api_module.cluster_manager, "cluster_exists", lambda: False)
 
     status = _make_api().setup_cluster(cpu=2, memory_gb=4, storage_gb=50)
@@ -200,10 +200,10 @@ def test_setup_cluster_checks_local_stack_prerequisites_before_creating_cluster(
 
 
 def test_setup_cluster_surfaces_local_stack_deploy_failure(monkeypatch):
-    monkeypatch.setattr(api_module.cluster_manager, "create_cluster", lambda cpu, mem: None)
+    monkeypatch.setattr(api_module.cluster_manager, "create_cluster", lambda cpu, mem, storage=None, on_step=None: None)
     monkeypatch.setattr(api_module.cluster_manager, "cluster_exists", lambda: True)
 
-    def raise_error(device_id, device_token=None):
+    def raise_error(device_id, device_token=None, on_step=None):
         raise LocalStackError("container-maker: make prod_setup failed")
     monkeypatch.setattr(api_module.local_stack, "deploy", raise_error)
 
@@ -235,11 +235,13 @@ def test_teardown_cluster_surfaces_error(monkeypatch):
     assert "k3d cluster delete failed" in status["error"]
 
 
-def test_open_browser_opens_the_local_ingress_host(monkeypatch):
+def test_open_browser_opens_cloud_host(monkeypatch):
+    """Migration Part 3 moved the browser UI to Cloud entirely - this opens Cloud's real host now,
+    not a local Ingress this repo deploys."""
     opened = []
     monkeypatch.setattr(api_module.webbrowser, "open", lambda url: opened.append(url))
     _make_api().open_browser()
-    assert opened == [f"http://{api_module.local_stack.INGRESS_HOST}"]
+    assert opened == [api_module.BROWSETERM_CLOUD_API_URL]
 
 
 def test_list_cluster_pods_returns_pods_on_success(monkeypatch):

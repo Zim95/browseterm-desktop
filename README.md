@@ -2,9 +2,10 @@
 
 Mac-only desktop app: login (an OAuth Device Authorization Grant against Cloud directly - see
 "Login" below; Google/GitHub OAuth is entirely Cloud's job, this app never holds a provider
-secret), a Cluster section (stands up/tears down the local k3d cluster + local-stack workloads,
-`desktop/cluster_manager.py`/`desktop/local_stack.py`), a Device page (hardware detection +
-activation against Cloud's Device API), and a background device heartbeat. Built with `pywebview`.
+secret), a Cluster section (stands up/tears down a real **Multipass VM running k3s** + the current
+local-stack workloads - `desktop/cluster_manager.py`/`desktop/local_stack.py`), a Device page
+(hardware detection + activation against Cloud's Device API), and a background device heartbeat.
+Built with `pywebview`.
 
 ## Run it
 
@@ -13,22 +14,46 @@ poetry install
 poetry run python main.py
 ```
 
-By default this points at `http://browseterm.cloud.com:9999` (Cloud) -- override with the
-`BROWSETERM_CLOUD_API_URL` env var for local development, matching the same convention
-`browseterm-server-local`'s `CloudClient` uses. Login itself never talks to Local at all (see
-below), so nothing about `browseterm-server-local`'s own address needs to be known before login.
+By default this points at `https://app.browseterm.puhtaeto.com` (real, live Cloud) -- override
+with the `BROWSETERM_CLOUD_API_URL` env var for local development against an instance running on
+this machine instead.
 
-The Cluster section's Setup button additionally needs `BROWSETERM_CLOUD_INTERNAL_API_TOKEN`
-(byte-identical to Cloud's own `CLOUD_INTERNAL_API_TOKEN`, SETUP-LOCAL.md step 5 -- every
-internal-token-gated Local-to-Cloud call otherwise silently 401s once `browseterm-server-local` is
-deployed). This is **not** something you export by hand before every launch: `desktop/config.py` reads it
-from `~/.browseterm/cloud_internal_api_token` (0600, outside any git repo -- this app never writes
-this file itself, it's set up once by hand, the same way Cloud's own `env.mk` secrets are), falling
-back to the `BROWSETERM_CLOUD_INTERNAL_API_TOKEN` env var only if you want to override it for one
-run (e.g. pointing this app at a different Cloud whose token differs). If Cloud's own token is ever
-regenerated (a fresh `cloud-setup.sh` bootstrap, a new cluster), update that file to match -- until
-then, `local_stack.check_prerequisites()` still refuses to deploy anything at all (fails in
-milliseconds, not after a ~90s cluster-create cycle) if the value it reads doesn't match Cloud's.
+## Cluster section
+
+`desktop/cluster_manager.py` provisions a dedicated `browseterm` Multipass Ubuntu VM and installs
+a pinned k3s version inside it (`multipass exec`), then merges its kubeconfig into
+`~/.kube/config` as context `browseterm` (k3s's own kubeconfig always names everything "default" -
+this rewrites those identifiers so it can never collide with another tool's own "default" context)
+- this is the real Part 15/16 target runtime, not the k3d dev-only shortcut this module used to be
+built on. `desktop/local_stack.py` then deploys the current stack onto it: MinIO, cert-manager,
+Container Maker, **browseterm-device-agent** (the sole local-to-Cloud communication boundary -
+Migration Part 7), status-monitor, reaper, and Socket-SSH - each via that repo's own already-tested
+deploy script, same principle as before. The old `browseterm-server-local` (a full local browser-UI
+server) is no longer deployed at all - migration Part 3 moved the browser UI to Cloud entirely.
+
+Both `create_cluster()` and `deploy()` accept an optional `on_step(name, status, detail)` callback
+reporting each real step ("Creating Multipass VM", "Installing k3s", "Deploying Container Maker",
+...) as started/succeeded/failed - not yet consumed by this app's own UI (a later phase's job), but
+the interface exists now for that phase to build on.
+
+The Setup button additionally needs `BROWSETERM_CLOUD_INTERNAL_API_TOKEN` (byte-identical to
+Cloud's own `CLOUD_INTERNAL_API_TOKEN`) - container-maker, status_monitor, reaper, and snapshot_job
+all still call Cloud directly with this one shared credential for a few things that don't have a
+Device Agent RPC equivalent yet (a documented, out-of-scope gap - see
+`BROWSETERM_MIGRATION_PROGRESS.md`'s Part 12 section). This is **not** something you export by hand
+before every launch: `desktop/config.py` reads it from `~/.browseterm/cloud_internal_api_token`
+(0600, outside any git repo -- this app never writes this file itself, it's set up once by hand,
+the same way Cloud's own `env.mk` secrets are), falling back to the
+`BROWSETERM_CLOUD_INTERNAL_API_TOKEN` env var only if you want to override it for one run. If
+Cloud's own token is ever regenerated, update that file to match -- until then,
+`local_stack.check_prerequisites()` still refuses to deploy anything at all (fails in milliseconds,
+not after a multi-minute VM-create + k3s-install cycle) if the value it reads doesn't match
+Cloud's.
+
+Device Agent itself needs this specific device's own Bearer credential (not the shared internal
+token above) - `local_stack.deploy()` copies it from this app's own Keychain storage
+(`desktop/keychain.py`) into a `browseterm-device-credential` Secret at deploy time, the one place
+it's ever written to disk/the cluster, and only as a Secret.
 
 ## Login: OAuth Device Authorization Grant (RFC 8628), not a WebView OAuth page
 

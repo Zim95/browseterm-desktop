@@ -9,12 +9,12 @@ Override it for local development against an instance running on this machine (e
 import os
 
 # Cloud control plane -- owns the Device API, the OAuth Device Authorization Grant login flow
-# (desktop/app.py, desktop/cloud_client.py), and issues the device Bearer credential this app
-# authenticates with. Matches `browseterm-server-local`'s own default. Local
-# (`browseterm-server-local`) is deliberately not configured here at all any more: this app's
-# login no longer needs it reachable (see the device-auth follow-up to p07.md) -- Local only
-# comes into play post-login, brought up by the Cluster section's Setup button.
-BROWSETERM_CLOUD_API_URL: str = os.getenv("BROWSETERM_CLOUD_API_URL", "http://browseterm.cloud.com:9999").rstrip("/")
+# (desktop/app.py, desktop/cloud_client.py), the browser UI (migration Part 3), and issues the
+# device Bearer credential this app authenticates with. Real, live production Cloud is the
+# default now (app.browseterm.puhtaeto.com went live during the Cloud Control Plane migration) --
+# override with BROWSETERM_CLOUD_API_URL for local development against an instance running on
+# this machine instead.
+BROWSETERM_CLOUD_API_URL: str = os.getenv("BROWSETERM_CLOUD_API_URL", "https://app.browseterm.puhtaeto.com").rstrip("/")
 
 # How often the background thread heartbeats this device (using its own long-lived device
 # credential -- see desktop/app.py's module docstring).
@@ -33,7 +33,7 @@ STATE_DIR: str = os.path.expanduser("~/.browseterm")
 STATE_FILE: str = os.path.join(STATE_DIR, "desktop_state.json")
 
 # Cluster section (desktop/local_stack.py): where the sibling repo checkouts for the local-stack
-# workloads (container-maker, socket-ssh, browseterm-server-local, status_monitor, cert-manager,
+# workloads (container-maker, browseterm-device-agent, socket-ssh, status_monitor, cert-manager,
 # reaper) live, so Setup can invoke each one's own `make prod_setup`/`dev_setup` target. Defaults
 # to this project's own convention of cloning every repo flat under one directory (~/browseterm).
 LOCAL_STACK_REPOS_DIR: str = os.path.expanduser(os.getenv("LOCAL_STACK_REPOS_DIR", "~/browseterm"))

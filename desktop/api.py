@@ -16,7 +16,8 @@ from typing import Any, Callable, Optional
 
 from desktop import cluster_manager, local_stack
 from desktop.cloud_client import CloudClient, CloudClientError
-from desktop.cluster_manager import ClusterError
+from desktop.cluster_manager import ClusterError, StepCallback
+from desktop.config import BROWSETERM_CLOUD_API_URL
 from desktop.device_info import BYTES_PER_GB, detect_hardware
 from desktop.keychain import KeychainStorage
 from desktop.state import DesktopState
@@ -70,7 +71,7 @@ class Api:
     def cluster_status(self) -> dict[str, Any]:
         """Current allocation (defaulting on first-ever read, see
         `DesktopState.ensure_allocation_defaults`), the detected totals it's bounded by, whether
-        the local k3d cluster is actually up (checked live, never cached), and its pods if so."""
+        the local Multipass/k3s cluster is actually up (checked live, never cached), and its pods if so."""
         hardware = detect_hardware()
         self._state.ensure_allocation_defaults(hardware)
         try:
@@ -107,15 +108,22 @@ class Api:
         except CloudClientError:
             pass  # local allocation is saved regardless -- Cloud sync is best-effort here.
 
-    def setup_cluster(self, cpu: int, memory_gb: float, storage_gb: float) -> dict[str, Any]:
+    def setup_cluster(
+        self, cpu: int, memory_gb: float, storage_gb: float,
+        on_step: Optional[StepCallback] = None,
+    ) -> dict[str, Any]:
+        """`on_step`, if given, is called as `on_step(step_name, status, detail)` for each real
+        step of VM creation and stack deployment (status: "started"/"succeeded"/"failed") - see
+        cluster_manager.StepCallback. Not consumed by this module itself; threading it through is
+        this phase's job, a later phase's setup-progress UI is what actually passes one in."""
         self._save_allocation(cpu, memory_gb, storage_gb)
         try:
-            # Checked before the cluster is even created: a doomed config (missing internal API
-            # token, missing /etc/hosts entries) fails in milliseconds, not after a ~90s
-            # cluster-create cycle only to fail deploying the actual workloads onto it.
+            # Checked before the VM is even created: a doomed config (missing internal API token)
+            # fails in milliseconds, not after a multi-minute VM-create + k3s-install cycle only
+            # to fail deploying the actual workloads onto it.
             local_stack.check_prerequisites()
-            cluster_manager.create_cluster(cpu, memory_gb)
-            local_stack.deploy(self._state.device_id, self._keychain.get_device_token())
+            cluster_manager.create_cluster(cpu, memory_gb, storage_gb, on_step=on_step)
+            local_stack.deploy(self._state.device_id, self._keychain.get_device_token(), on_step=on_step)
         except ClusterError as e:
             status = self.cluster_status()
             status["error"] = str(e)
@@ -132,13 +140,12 @@ class Api:
         return self.cluster_status()
 
     def open_browser(self) -> None:
-        '''Opens the real web UI (the same Ingress host local_stack.py deploys
-        browseterm-server-local behind) in the system browser - a shortcut next to Teardown so
-        the user doesn't have to remember/type browseterm.local.com themselves once Setup has
-        actually finished. Only shown by the UI once cluster_exists is true (desktop/web/static/
-        js/app.js), but this method itself doesn't re-check that - opening a URL that isn't up
-        yet just fails in the browser tab, same as typing it in by hand would.'''
-        webbrowser.open(f"http://{local_stack.INGRESS_HOST}")
+        '''Opens Browseterm's real web UI in the system browser - a shortcut next to Teardown.
+        Migration Part 3 moved the browser UI to Cloud entirely, so this is just Cloud's own host
+        now, not a local Ingress this repo deploys - nothing to "finish setting up" first the way
+        the old Local-hosted UI needed; it works whether or not the Cluster section has been set
+        up at all (though nothing useful happens in it without an active, connected device).'''
+        webbrowser.open(BROWSETERM_CLOUD_API_URL)
 
     def list_cluster_pods(self) -> dict[str, Any]:
         try:
