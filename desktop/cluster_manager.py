@@ -43,6 +43,7 @@ _LAUNCH_TIMEOUT_SECONDS = 180.0
 _K3S_INSTALL_TIMEOUT_SECONDS = 150.0
 _K3S_READY_TIMEOUT_SECONDS = 90.0
 _DELETE_TIMEOUT_SECONDS = 60.0
+_GVISOR_INSTALL_TIMEOUT_SECONDS = 120.0
 
 # The pod monitor shows only the workloads that need to stay continuously running to keep the
 # local execution plane usable - verified against each component's actual current manifest
@@ -181,16 +182,87 @@ def _create_vm(cpu_cores: int, memory_gb: float, storage_gb: float) -> None:
 def _install_k3s() -> None:
     """Idempotent - `curl | sh` re-run against an already-installed k3s just re-applies the same
     version and restarts the service, matching how every other pinned-version install in this
-    project (e.g. the Contabo prod host) already behaves."""
+    project (e.g. the Contabo prod host) already behaves.
+
+    Bundled Traefik and servicelb are disabled (same flags the project's old single-node
+    scripts/setup.k3s.sh used) - this single-tenant local cluster has no LoadBalancer-type Service
+    and no Ingress a controller actually needs to serve (socket-ssh's own Ingress object is inert,
+    real terminal exposure goes through ngrok - see local_stack.py's own docstring), so running
+    those controllers here would only be unused attack surface and resource cost, not a
+    functional requirement. `local-path` (the default StorageClass) is deliberately NOT disabled -
+    MinIO/Postgres/Redis PVCs need it for dynamic provisioning."""
     install_cmd = (
         f"curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION={K3S_VERSION} "
-        "INSTALL_K3S_EXEC='--write-kubeconfig-mode 644' sh -"
+        "INSTALL_K3S_EXEC='--write-kubeconfig-mode 644 --disable traefik --disable servicelb' sh -"
     )
     _multipass_exec(["sudo", "bash", "-c", install_cmd], timeout=_K3S_INSTALL_TIMEOUT_SECONDS)
+    _wait_for_node_ready()
+
+
+def _wait_for_node_ready() -> None:
     _multipass_exec(
         ["sudo", "k3s", "kubectl", "wait", "--for=condition=Ready", "node", "--all", "--timeout=90s"],
         timeout=_K3S_READY_TIMEOUT_SECONDS,
     )
+
+
+# Sandboxes the untrusted-root-shell USER pods container-maker creates (its manifest hardcodes
+# `runtimeClassName: gvisor` unconditionally - see container-maker/infra/k8s/deployment/
+# deployment.yaml's own USER_POD_RUNTIME_CLASS env, added migration-independently back when this
+# project first solved tenant isolation, see 00_docs/k3s_single_node.md/scripts/setup.k3s.sh, the
+# project's old single-node-k3s reference setup). Without runsc installed and this RuntimeClass
+# registered, a pod referencing it simply never schedules (stays Pending forever) - so on THIS
+# Multipass VM specifically, every terminal a user creates would hang if this step were skipped;
+# this is a hard prerequisite, not a hardening nicety.
+_GVISOR_INSTALL_SCRIPT = r"""
+set -euo pipefail
+ARCH="$(uname -m)"   # aarch64 on Apple Silicon, x86_64 on Intel - gVisor publishes both
+TMPL=/var/lib/rancher/k3s/agent/etc/containerd/config.toml.tmpl
+
+if command -v runsc >/dev/null 2>&1; then
+  echo "  runsc already installed ($(runsc --version | head -1))"
+else
+  echo "  downloading runsc + containerd-shim-runsc-v1 (${ARCH})"
+  URL="https://storage.googleapis.com/gvisor/releases/release/latest/${ARCH}"
+  workdir="$(mktemp -d)"; cd "$workdir"
+  for f in runsc containerd-shim-runsc-v1; do
+    wget -q "${URL}/${f}" "${URL}/${f}.sha512"
+  done
+  sha512sum -c runsc.sha512 containerd-shim-runsc-v1.sha512
+  chmod a+rx runsc containerd-shim-runsc-v1
+  mv runsc containerd-shim-runsc-v1 /usr/local/bin/
+  cd /; rm -rf "$workdir"
+  echo "  installed $(runsc --version | head -1)"
+fi
+
+# Register a `runsc` runtime with k3s's bundled containerd via a config template.
+# `{{ template "base" . }}` pulls in everything k3s would normally generate; we only append the
+# runsc runtime handler.
+if [ -f "$TMPL" ] && grep -q 'runtimes.runsc' "$TMPL"; then
+  echo "  containerd template already has the runsc runtime - leaving k3s untouched"
+else
+  echo "  writing $TMPL with a runsc runtime block"
+  mkdir -p "$(dirname "$TMPL")"
+  cat > "$TMPL" <<'TOML'
+{{ template "base" . }}
+
+[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runsc]
+  runtime_type = "io.containerd.runsc.v1"
+TOML
+  echo "  restarting k3s to pick up the new containerd config (brief blip; it comes back)"
+  systemctl restart k3s
+fi
+""".strip()
+
+
+def _install_gvisor() -> None:
+    """Idempotent (mirrors scripts/setup.k3s.sh's own GVISOR block verbatim) - skips the download
+    if runsc is already installed, only (re)writes the containerd template + restarts k3s when the
+    runsc runtime block is missing. The RuntimeClass object itself (a cluster resource, not a node
+    one) is applied by local_stack.py's deploy(), not here - same split scripts/setup.k3s.sh and
+    scripts/deploy.k3s.sh already used."""
+    _multipass_exec(["sudo", "bash", "-c", _GVISOR_INSTALL_SCRIPT], timeout=_GVISOR_INSTALL_TIMEOUT_SECONDS)
+    _wait_for_node_ready()
 
 
 def _fetch_and_merge_kubeconfig() -> None:
@@ -243,6 +315,7 @@ def create_cluster(
 ) -> None:
     _run_step(on_step, "Creating Multipass VM", lambda: _create_vm(cpu_cores, memory_gb, storage_gb))
     _run_step(on_step, "Installing k3s", _install_k3s)
+    _run_step(on_step, "Installing gVisor sandbox runtime", _install_gvisor)
     _run_step(on_step, "Configuring kubectl access", _fetch_and_merge_kubeconfig)
 
 

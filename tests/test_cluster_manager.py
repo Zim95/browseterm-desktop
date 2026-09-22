@@ -94,6 +94,7 @@ def test_create_cluster_skips_launch_if_vm_exists(monkeypatch):
     })
     monkeypatch.setattr(cluster_manager, "subprocess", _FakeModule(fake))
     monkeypatch.setattr(cluster_manager, "_install_k3s", lambda: None)
+    monkeypatch.setattr(cluster_manager, "_install_gvisor", lambda: None)
     monkeypatch.setattr(cluster_manager, "_fetch_and_merge_kubeconfig", lambda: None)
     cluster_manager.create_cluster(4, 8.0)
     assert not any(c[:2] == ["multipass", "launch"] for c in fake.calls)
@@ -112,6 +113,7 @@ def test_create_cluster_launches_when_vm_absent(monkeypatch):
 
     monkeypatch.setattr(cluster_manager, "subprocess", _FakeModule(run))
     monkeypatch.setattr(cluster_manager, "_install_k3s", lambda: None)
+    monkeypatch.setattr(cluster_manager, "_install_gvisor", lambda: None)
     monkeypatch.setattr(cluster_manager, "_fetch_and_merge_kubeconfig", lambda: None)
     cluster_manager.create_cluster(4, 8.0)
     assert calls_seen["launch"] is True
@@ -120,12 +122,14 @@ def test_create_cluster_launches_when_vm_absent(monkeypatch):
 def test_create_cluster_reports_steps_in_order(monkeypatch):
     monkeypatch.setattr(cluster_manager, "_create_vm", lambda *a: None)
     monkeypatch.setattr(cluster_manager, "_install_k3s", lambda: None)
+    monkeypatch.setattr(cluster_manager, "_install_gvisor", lambda: None)
     monkeypatch.setattr(cluster_manager, "_fetch_and_merge_kubeconfig", lambda: None)
     events = []
     cluster_manager.create_cluster(4, 8.0, on_step=lambda name, status, detail: events.append((name, status)))
     assert events == [
         ("Creating Multipass VM", "started"), ("Creating Multipass VM", "succeeded"),
         ("Installing k3s", "started"), ("Installing k3s", "succeeded"),
+        ("Installing gVisor sandbox runtime", "started"), ("Installing gVisor sandbox runtime", "succeeded"),
         ("Configuring kubectl access", "started"), ("Configuring kubectl access", "succeeded"),
     ]
 
@@ -148,6 +152,7 @@ def test_create_cluster_works_without_on_step(monkeypatch):
     """on_step is optional everywhere - existing callers that don't pass it must keep working."""
     monkeypatch.setattr(cluster_manager, "_create_vm", lambda *a: None)
     monkeypatch.setattr(cluster_manager, "_install_k3s", lambda: None)
+    monkeypatch.setattr(cluster_manager, "_install_gvisor", lambda: None)
     monkeypatch.setattr(cluster_manager, "_fetch_and_merge_kubeconfig", lambda: None)
     cluster_manager.create_cluster(4, 8.0)  # must not raise
 
@@ -239,6 +244,42 @@ def test_fetch_and_merge_kubeconfig_renames_default_and_rewrites_server(monkeypa
     monkeypatch.setattr(cluster_manager.subprocess, "run", run)
     cluster_manager._fetch_and_merge_kubeconfig()
     assert kubeconfig_path.read_text() == "merged-output"
+
+
+def test_install_k3s_disables_traefik_and_servicelb(monkeypatch):
+    """No LoadBalancer-type Service and no real Ingress consumer exists on this single-tenant
+    local cluster (see cluster_manager._install_k3s's own docstring) - the bundled controllers
+    this disables would be unused, not load-bearing."""
+    fake = _fake_run({})
+    monkeypatch.setattr(cluster_manager, "subprocess", _FakeModule(fake))
+    cluster_manager._install_k3s()
+    install_call = next(c for c in fake.calls if c[:2] == ["multipass", "exec"] and "curl -sfL https://get.k3s.io" in c[-1])
+    assert "--disable traefik" in install_call[-1]
+    assert "--disable servicelb" in install_call[-1]
+    # local-path (default StorageClass) must NOT be disabled - MinIO/Postgres/Redis PVCs need it.
+    assert "local-storage" not in install_call[-1]
+
+
+def test_install_gvisor_skips_download_when_runsc_already_present(monkeypatch):
+    fake = _fake_run({})
+    monkeypatch.setattr(cluster_manager, "subprocess", _FakeModule(fake))
+    cluster_manager._install_gvisor()
+    gvisor_call = next(c for c in fake.calls if c[:2] == ["multipass", "exec"] and "runsc" in c[-1])
+    assert "command -v runsc" in gvisor_call[-1]
+    assert "containerd.runtimes.runsc" in gvisor_call[-1]
+
+
+def test_install_gvisor_waits_for_node_ready_again(monkeypatch):
+    """gVisor's containerd-template write path restarts k3s (see the script's own comment) -
+    _install_gvisor must wait for the node to come back Ready, the same way _install_k3s already
+    does after its own initial install."""
+    fake = _fake_run({})
+    monkeypatch.setattr(cluster_manager, "subprocess", _FakeModule(fake))
+    cluster_manager._install_gvisor()
+    assert any(
+        c[:3] == ["multipass", "exec", cluster_manager.VM_NAME] and "wait" in c and "Ready" in " ".join(c)
+        for c in fake.calls
+    )
 
 
 class _FakeModule:

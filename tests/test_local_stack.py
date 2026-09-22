@@ -59,7 +59,7 @@ def test_deploy_calls_every_step_in_order(monkeypatch):
     order = []
     for name in (
         "_ensure_namespace", "_ensure_internal_api_token_secret", "_ensure_device_credential_secret",
-        "_deploy_minio", "_deploy_cert_manager", "_deploy_container_maker",
+        "_deploy_gvisor_runtimeclass", "_deploy_minio", "_deploy_cert_manager", "_deploy_container_maker",
         "_build_device_agent_image", "_deploy_device_agent",
         "_deploy_status_monitor", "_deploy_reaper", "_deploy_socket_ssh",
     ):
@@ -71,7 +71,7 @@ def test_deploy_calls_every_step_in_order(monkeypatch):
 
     assert order == [
         "_ensure_namespace", "_ensure_internal_api_token_secret", "_ensure_device_credential_secret",
-        "_deploy_minio", "_deploy_cert_manager", "_deploy_container_maker",
+        "_deploy_gvisor_runtimeclass", "_deploy_minio", "_deploy_cert_manager", "_deploy_container_maker",
         "_build_device_agent_image", "_deploy_device_agent",
         "_deploy_status_monitor", "_deploy_reaper", "_deploy_socket_ssh",
     ]
@@ -80,7 +80,7 @@ def test_deploy_calls_every_step_in_order(monkeypatch):
 def test_deploy_reports_steps_via_on_step(monkeypatch):
     for name in (
         "_ensure_namespace", "_ensure_internal_api_token_secret", "_ensure_device_credential_secret",
-        "_deploy_minio", "_deploy_cert_manager", "_deploy_container_maker",
+        "_deploy_gvisor_runtimeclass", "_deploy_minio", "_deploy_cert_manager", "_deploy_container_maker",
         "_build_device_agent_image", "_deploy_device_agent",
         "_deploy_status_monitor", "_deploy_reaper", "_deploy_socket_ssh",
     ):
@@ -101,6 +101,7 @@ def test_deploy_stops_on_first_failure(monkeypatch):
     monkeypatch.setattr(local_stack, "_ensure_namespace", lambda: None)
     monkeypatch.setattr(local_stack, "_ensure_internal_api_token_secret", lambda: None)
     monkeypatch.setattr(local_stack, "_ensure_device_credential_secret", lambda *a: None)
+    monkeypatch.setattr(local_stack, "_deploy_gvisor_runtimeclass", lambda: None)
     monkeypatch.setattr(local_stack, "_run", lambda *a, **kw: "")
 
     def boom():
@@ -129,3 +130,35 @@ def test_write_env_mk_writes_expected_content(monkeypatch, tmp_path):
     content = (repo_dir / "env.mk").read_text()
     assert "NAMESPACE=browseterm" in content
     assert "DEVICE_ID=dev-1" in content
+
+
+def test_deploy_gvisor_runtimeclass_applies_the_manifest(monkeypatch, tmp_path):
+    manifest = tmp_path / "gvisor-runtimeclass.yaml"
+    manifest.write_text("kind: RuntimeClass\nmetadata:\n  name: gvisor\nhandler: runsc\n")
+    monkeypatch.setattr(local_stack, "_GVISOR_RUNTIMECLASS_MANIFEST_PATH", str(manifest))
+    calls = []
+    monkeypatch.setattr(local_stack, "_run", lambda *a, **kw: calls.append((a, kw)))
+    local_stack._deploy_gvisor_runtimeclass()
+    (args, kwargs) = calls[0]
+    assert args[0] == ["kubectl", "--context", local_stack.KUBE_CONTEXT, "apply", "-f", "-"]
+    assert "RuntimeClass" in kwargs["input_text"]
+
+
+def test_deploy_gvisor_runtimeclass_raises_when_manifest_missing(monkeypatch, tmp_path):
+    monkeypatch.setattr(local_stack, "_GVISOR_RUNTIMECLASS_MANIFEST_PATH", str(tmp_path / "missing.yaml"))
+    with pytest.raises(LocalStackError, match="gVisor RuntimeClass manifest not found"):
+        local_stack._deploy_gvisor_runtimeclass()
+
+
+def test_deploy_socket_ssh_no_longer_passes_cloud_config(monkeypatch):
+    """Migration Part 13: socket-ssh talks to Device Agent's local API only - no
+    BROWSETERM_CLOUD_API_URL/CLOUD_INGRESS_HOST(_IP)/DEVICE_TOKEN of any kind any more."""
+    calls = []
+    monkeypatch.setattr(local_stack, "_make", lambda *a, **kw: calls.append((a, kw)))
+    local_stack._deploy_socket_ssh()
+    (args, kwargs) = calls[0]
+    assert args == ("socket-ssh", "prod_setup")
+    assert "DEVICE_AGENT_LOCAL_API_URL" in kwargs
+    assert "BROWSETERM_CLOUD_API_URL" not in kwargs
+    assert "CLOUD_INGRESS_HOST" not in kwargs
+    assert "CLOUD_INGRESS_HOST_IP" not in kwargs

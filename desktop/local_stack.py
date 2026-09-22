@@ -8,14 +8,20 @@ relied on the old global CLOUD_INTERNAL_API_TOKEN model for status_monitor/reape
 both of which are now wrong: migration Part 3 moved the browser UI to Cloud entirely, and Part 12
 rewired those three workloads onto browseterm-device-agent's local API instead.
 
-No ingress-nginx step any more, unlike the old version. Verified before dropping it, not assumed:
-socket-ssh/infra/deployment/deployment.yaml still declares an Ingress object (ingressClassName:
-nginx), but nothing routes to it externally any more - the real terminal-traffic exposure path is
-ngrok, via the tunnel-registrar sidecar already in that same manifest. A Kubernetes API server
-does not reject creating an Ingress that references a non-existent IngressClass (no controller
-ever claims it, it just sits inert) - the Ingress object still applies successfully without
-ingress-nginx installed, so skipping that whole step (manifest fetch, Traefik removal, controller
-rollout wait) is safe, not a functional gap.
+No ingress-nginx or MetalLB step, unlike the project's old pre-migration single-node-k3s reference
+setup (scripts/deploy.k3s.sh, 00_docs/k3s_single_node.md). Verified before dropping them, not
+assumed: no Service anywhere in the current local-stack manifests is `type: LoadBalancer` (MetalLB
+exists only to hand those an external IP), and socket-ssh/infra/deployment/deployment.yaml still
+declares an Ingress object (ingressClassName: nginx), but nothing routes to it externally any more
+- the real terminal-traffic exposure path is ngrok, via the tunnel-registrar sidecar already in
+that same manifest. A Kubernetes API server does not reject creating an Ingress that references a
+non-existent IngressClass (no controller ever claims it, it just sits inert) - the Ingress object
+still applies successfully without ingress-nginx installed, so skipping both whole steps (manifest
+fetch, controller rollout wait, IPAddressPool) is safe, not a functional gap. `cluster_manager.
+_install_k3s` disables k3s's own bundled Traefik/servicelb for the same reason - nothing here
+needs either. gVisor is the one node-level piece from that old setup that IS still required (see
+_deploy_gvisor_runtimeclass's own docstring) - installed by cluster_manager._install_gvisor and
+wired in here as its own deploy step.
 
 Reuses each component's own already-tested deploy script, same principle the old version of this
 module used - but for container-maker specifically, its own `make prod_setup` target only forwards
@@ -69,6 +75,9 @@ _REPO_DIRS = {
     "reaper": "browseterm_workload/reaper",
 }
 _MINIO_MANIFEST_PATH = os.path.join(LOCAL_STACK_REPOS_DIR, "browseterm-monorepo", "02_cluster_infra", "minio.yaml")
+_GVISOR_RUNTIMECLASS_MANIFEST_PATH = os.path.join(
+    LOCAL_STACK_REPOS_DIR, "browseterm-monorepo", "02_cluster_infra", "gvisor-runtimeclass.yaml"
+)
 
 _MAKE_TIMEOUT_SECONDS = 90.0
 _CRONJOB_TRIGGER_TIMEOUT_SECONDS = 120.0
@@ -193,6 +202,22 @@ def _deploy_minio() -> None:
     _run(["kubectl", "--context", KUBE_CONTEXT, "apply", "-f", "-"], input_text=yaml_text)
 
 
+def _deploy_gvisor_runtimeclass() -> None:
+    """Applies the cluster-scoped RuntimeClass mapping `gvisor` -> the `runsc` containerd handler
+    cluster_manager._install_gvisor already installed on the node. container-maker's own manifest
+    hardcodes `runtimeClassName: gvisor` unconditionally for every USER pod (see
+    container-maker/infra/k8s/deployment/deployment.yaml's USER_POD_RUNTIME_CLASS env) - without
+    this object existing, a pod referencing it simply never schedules (stays Pending forever), so
+    this must run before any terminal gets created, not merely as a hardening nicety. Applied
+    early in deploy() (right after namespace/secrets), matching the project's old
+    scripts/setup.k3s.sh (node install) / scripts/deploy.k3s.sh (cluster object) split."""
+    if not os.path.isfile(_GVISOR_RUNTIMECLASS_MANIFEST_PATH):
+        raise LocalStackError(f"gVisor RuntimeClass manifest not found at {_GVISOR_RUNTIMECLASS_MANIFEST_PATH}")
+    with open(_GVISOR_RUNTIMECLASS_MANIFEST_PATH) as f:
+        yaml_text = f.read()
+    _run(["kubectl", "--context", KUBE_CONTEXT, "apply", "-f", "-"], input_text=yaml_text)
+
+
 def _trigger_and_wait_cronjob(cronjob_name: str, job_name_prefix: str, timeout: float) -> None:
     job_name = f"{job_name_prefix}-{int(time.time())}"
     _run([
@@ -219,12 +244,13 @@ def _deploy_cert_manager() -> None:
 
 def _deploy_container_maker(cloud_ingress_host_ip: str) -> None:
     """Calls the setup script directly (see module docstring) - full 11-positional-arg signature
-    the script itself declares, gVisor deliberately omitted (empty string): a Multipass VM's k3s
-    has no gVisor RuntimeClass registered (no runsc installed inside it), and container-maker's own
-    pod_manager.py already treats an empty USER_POD_RUNTIME_CLASS as "omit the field entirely" -
-    the same deliberate single-tenant-local compromise the previous version of this module made
-    (this machine's own owner is the only person who ever uses this cluster, unlike the shared prod
-    cluster gVisor isolation matters for)."""
+    the script itself declares; there is no gVisor arg to pass at all - container-maker's manifest
+    (infra/k8s/deployment/deployment.yaml) hardcodes USER_POD_RUNTIME_CLASS=gvisor unconditionally,
+    so every USER pod it creates always requests the `gvisor` RuntimeClass regardless of what this
+    function does. That's exactly why `create_cluster` installs runsc on the node
+    (cluster_manager._install_gvisor) and `deploy()` applies the RuntimeClass object
+    (_deploy_gvisor_runtimeclass) before this step runs - without both, every terminal a user
+    creates would hang Pending forever, not merely run less sandboxed."""
     _run_script(
         "container-maker", "scripts/k8s/deployment/k8s-development-setup.sh",
         NAMESPACE, DOCKER_HUB_REPO_NAME, DOCKER_HUB_REPO_PASSWORD, _CONTAINER_MAKER_INGRESS_HOST,
@@ -244,16 +270,17 @@ def _deploy_device_agent() -> None:
     _make("browseterm-device-agent", "prod_setup", NAMESPACE=NAMESPACE, REPO_NAME=DOCKER_HUB_REPO_NAME)
 
 
-def _deploy_socket_ssh(cloud_ingress_host_ip: str) -> None:
+def _deploy_socket_ssh() -> None:
+    """Migration Part 13: socket-ssh no longer calls Cloud directly at all - it consumes terminal
+    tickets via a gRPC call to Device Agent's local API instead, so it needs no Cloud-facing
+    config (BROWSETERM_CLOUD_API_URL/CLOUD_INGRESS_HOST(_IP)/DEVICE_TOKEN are all gone from its
+    own Makefile/manifest now) and no `cloud_ingress_host_ip` parameter."""
     _make(
         "socket-ssh", "prod_setup",
         NAMESPACE=NAMESPACE, REPO_NAME=DOCKER_HUB_REPO_NAME,
         SOCKET_SSH_HOST="socketssh.browseterm.local",
-        BROWSETERM_CLOUD_API_URL=BROWSETERM_CLOUD_API_URL,
-        ALLOWED_ORIGINS_PROD="https://app.browseterm.puhtaeto.com",
-        CLOUD_INGRESS_HOST=urlparse(BROWSETERM_CLOUD_API_URL).hostname or "",
-        CLOUD_INGRESS_HOST_IP=cloud_ingress_host_ip,
         DEVICE_AGENT_LOCAL_API_URL=DEVICE_AGENT_LOCAL_API_URL,
+        ALLOWED_ORIGINS_PROD="https://app.browseterm.puhtaeto.com",
     )
 
 
@@ -307,6 +334,7 @@ def deploy(
         _ensure_internal_api_token_secret(),
         _ensure_device_credential_secret(device_id or "", device_token or ""),
     ))
+    _run_step(on_step, "Applying gVisor RuntimeClass", _deploy_gvisor_runtimeclass)
     _run_step(on_step, "Deploying MinIO", _deploy_minio)
     _run_step(on_step, "Deploying cert-manager", _deploy_cert_manager)
     cloud_ingress_host_ip = _resolve_cloud_ingress_host_ip()
@@ -315,4 +343,4 @@ def deploy(
     _run_step(on_step, "Deploying Device Agent", _deploy_device_agent)
     _run_step(on_step, "Deploying status-monitor", lambda: _deploy_status_monitor(device_id or "", cloud_ingress_host_ip))
     _run_step(on_step, "Deploying reaper", lambda: _deploy_reaper(device_id or "", cloud_ingress_host_ip))
-    _run_step(on_step, "Deploying Socket-SSH", lambda: _deploy_socket_ssh(cloud_ingress_host_ip))
+    _run_step(on_step, "Deploying Socket-SSH", _deploy_socket_ssh)
