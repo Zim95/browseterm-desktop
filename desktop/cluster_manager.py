@@ -127,6 +127,28 @@ def cluster_exists() -> bool:
     return VM_NAME in info.get("info", {})
 
 
+def vm_state() -> str:
+    '''"Running"/"Stopped"/... as multipass itself reports it, or "Missing" if the VM doesn't
+    exist at all - used by the daemon's health-check loop to notice a VM that stopped (e.g. after
+    the Mac slept) without needing its own info-parsing logic. Never raises - a multipass error
+    here just means "can't tell," reported as "Unknown" rather than propagating, since a health
+    check should never crash the daemon over a transient CLI hiccup.'''
+    try:
+        info = json.loads(_run(["multipass", "info", VM_NAME, "--format", "json"]))
+    except ClusterError:
+        return "Unknown"
+    if VM_NAME not in info.get("info", {}):
+        return "Missing"
+    return _vm_state(info)
+
+
+def start_vm() -> None:
+    '''Starts an existing, stopped VM back up - the daemon's own recovery action for "the Mac
+    slept and multipass stopped the VM." A no-op error from multipass if the VM is already
+    running (idempotent, matches every other lifecycle op in this module).'''
+    _run(["multipass", "start", VM_NAME], timeout=_LAUNCH_TIMEOUT_SECONDS)
+
+
 def _vm_state(info: dict[str, Any]) -> str:
     return info.get("info", {}).get(VM_NAME, {}).get("state", "Unknown")
 

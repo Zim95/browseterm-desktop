@@ -58,10 +58,11 @@ def _fake_local_stack(monkeypatch):
     monkeypatch.setattr(api_module.local_stack, "deploy", lambda device_id, device_token=None, on_step=None: None)
 
 
-def _make_api(state=None, keychain=None):
+def _make_api(state=None, keychain=None, on_setup_step=None):
     return Api(
         state or DesktopState(), keychain or _FakeKeychain(),
         on_logout=lambda: None, on_retry_login=lambda: None, on_start_login=lambda provider: None,
+        on_setup_step=on_setup_step,
     )
 
 
@@ -211,6 +212,44 @@ def test_setup_cluster_surfaces_local_stack_deploy_failure(monkeypatch):
 
     assert status["cluster_exists"] is True  # the k3d cluster itself did come up
     assert "container-maker" in status["error"]
+
+
+def test_setup_cluster_uses_constructor_on_setup_step_by_default(monkeypatch):
+    """JS never passes its own on_step (pywebview's bridge only marshals JSON, not callables) --
+    setup_cluster must fall back to whatever this Api was constructed with, which desktop/app.py
+    wires to push live progress into the WebView via evaluate_js."""
+    seen = []
+    monkeypatch.setattr(
+        api_module.cluster_manager, "create_cluster",
+        lambda cpu, mem, storage=None, on_step=None: on_step("Creating Multipass VM", "started", ""),
+    )
+    monkeypatch.setattr(api_module.cluster_manager, "cluster_exists", lambda: True)
+    monkeypatch.setattr(
+        api_module.local_stack, "deploy",
+        lambda device_id, device_token=None, on_step=None: on_step("Deploying MinIO", "succeeded", ""),
+    )
+
+    _make_api(on_setup_step=lambda name, status, detail: seen.append((name, status, detail))).setup_cluster(
+        cpu=2, memory_gb=4, storage_gb=50,
+    )
+
+    assert seen == [("Creating Multipass VM", "started", ""), ("Deploying MinIO", "succeeded", "")]
+
+
+def test_setup_cluster_explicit_on_step_overrides_constructor_default(monkeypatch):
+    monkeypatch.setattr(
+        api_module.cluster_manager, "create_cluster",
+        lambda cpu, mem, storage=None, on_step=None: on_step("Creating Multipass VM", "started", ""),
+    )
+    monkeypatch.setattr(api_module.cluster_manager, "cluster_exists", lambda: True)
+    monkeypatch.setattr(api_module.local_stack, "deploy", lambda device_id, device_token=None, on_step=None: None)
+
+    constructor_seen = []
+    explicit_seen = []
+    api = _make_api(on_setup_step=lambda *a: constructor_seen.append(a))
+    api.setup_cluster(cpu=2, memory_gb=4, storage_gb=50, on_step=lambda *a: explicit_seen.append(a))
+
+    assert explicit_seen and not constructor_seen
 
 
 def test_teardown_cluster_deletes_and_reports_status(monkeypatch):

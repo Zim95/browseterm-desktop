@@ -42,12 +42,17 @@ class Api:
         self, state: DesktopState, keychain: KeychainStorage,
         on_logout: Callable[[], None], on_retry_login: Callable[[], None],
         on_start_login: Callable[[str], None],
+        on_setup_step: Optional[StepCallback] = None,
     ):
         self._state = state
         self._keychain = keychain
         self._on_logout = on_logout
         self._on_retry_login = on_retry_login
         self._on_start_login = on_start_login
+        # Live progress feed for the Setup button (desktop/app.py's _handle_setup_step pushes
+        # each step into the DOM via evaluate_js) - optional so tests/callers that don't care
+        # about live progress can omit it, same as StepCallback everywhere else.
+        self._on_setup_step = on_setup_step
 
     def device_info(self) -> dict[str, Any]:
         hardware = detect_hardware()
@@ -114,8 +119,12 @@ class Api:
     ) -> dict[str, Any]:
         """`on_step`, if given, is called as `on_step(step_name, status, detail)` for each real
         step of VM creation and stack deployment (status: "started"/"succeeded"/"failed") - see
-        cluster_manager.StepCallback. Not consumed by this module itself; threading it through is
-        this phase's job, a later phase's setup-progress UI is what actually passes one in."""
+        cluster_manager.StepCallback. JS never passes one (pywebview's js_api only marshals JSON
+        types across the bridge, not a live callback) - defaults to the `on_setup_step` this Api
+        was constructed with, which desktop/app.py wires to push each step into the WebView's own
+        DOM live via evaluate_js. An explicit `on_step` is only for tests that want to observe the
+        step sequence directly."""
+        on_step = on_step or self._on_setup_step
         self._save_allocation(cpu, memory_gb, storage_gb)
         try:
             # Checked before the VM is even created: a doomed config (missing internal API token)

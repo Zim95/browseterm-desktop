@@ -205,6 +205,64 @@ body {
     color: var(--text-secondary);
 }
 
+.setup-steps {
+    list-style: none;
+    margin: 1rem 0 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+}
+
+.setup-step {
+    display: flex;
+    align-items: baseline;
+    gap: 0.6rem;
+    padding: 0.5rem 0.9rem;
+    border-radius: var(--border-radius);
+    background: var(--background);
+    font-size: 0.9rem;
+    color: var(--text-secondary);
+}
+
+.setup-step-icon {
+    width: 1.1rem;
+    text-align: center;
+    font-weight: 700;
+}
+
+.setup-step-name {
+    color: var(--text-primary);
+    flex: 1;
+}
+
+.setup-step-detail {
+    color: #B23B3B;
+    font-size: 0.82rem;
+}
+
+.setup-step-started .setup-step-icon {
+    color: var(--active-color);
+    animation: setup-step-pulse 1s ease-in-out infinite;
+}
+
+.setup-step-succeeded .setup-step-icon {
+    color: #1B8A4E;
+}
+
+.setup-step-failed {
+    background: #FFF1F1;
+}
+
+.setup-step-failed .setup-step-icon {
+    color: #B23B3B;
+}
+
+@keyframes setup-step-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.35; }
+}
+
 .status-badge.unknown, .status-badge.revoked {
     background: #FDEAEA;
     color: #C0392B;

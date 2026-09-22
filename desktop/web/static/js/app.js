@@ -114,6 +114,8 @@ async function toggleCluster() {
     btn.disabled = true;
     btn.textContent = settingUp ? 'Setting up...' : 'Tearing down...';
 
+    if (settingUp) resetSetupSteps();
+
     const status = settingUp
         ? await window.pywebview.api.setup_cluster(
             Number(document.getElementById('cpuSlider').value),
@@ -126,6 +128,48 @@ async function toggleCluster() {
     clusterSlidersTouched = false;
     renderCluster(status);
 }
+
+/**
+ * Live Setup progress. Python pushes each step via evaluate_js (desktop/app.py's
+ * _handle_setup_step) as window.onSetupStep(stepName, status, detail) - status one of
+ * "started"/"succeeded"/"failed". Steps aren't known ahead of time (cluster_manager.py/
+ * local_stack.py own the real list), so rows are created on first sight rather than hardcoded
+ * here, in the order they actually arrive.
+ */
+const _setupStepOrder = [];
+const _setupStepRows = {};
+
+function resetSetupSteps() {
+    _setupStepOrder.length = 0;
+    for (const key of Object.keys(_setupStepRows)) delete _setupStepRows[key];
+    const list = document.getElementById('setupSteps');
+    list.innerHTML = '';
+    list.hidden = false;
+}
+
+function _stepIcon(status) {
+    if (status === 'succeeded') return '✓';
+    if (status === 'failed') return '✕';
+    if (status === 'started') return '●';
+    return '○';
+}
+
+window.onSetupStep = function onSetupStep(stepName, status, detail) {
+    const list = document.getElementById('setupSteps');
+    let row = _setupStepRows[stepName];
+    if (!row) {
+        row = document.createElement('li');
+        row.className = 'setup-step';
+        row.innerHTML = '<span class="setup-step-icon"></span><span class="setup-step-name"></span><span class="setup-step-detail"></span>';
+        _setupStepRows[stepName] = row;
+        _setupStepOrder.push(stepName);
+        list.appendChild(row);
+    }
+    row.className = `setup-step setup-step-${status}`;
+    row.querySelector('.setup-step-icon').textContent = _stepIcon(status);
+    row.querySelector('.setup-step-name').textContent = stepName;
+    row.querySelector('.setup-step-detail').textContent = status === 'failed' ? (detail || '') : '';
+};
 
 function renderPods(pods) {
     const body = document.getElementById('podTableBody');

@@ -28,6 +28,11 @@ Moving to the device grant breaks it, because this app now only ever talks to Cl
    into macOS Keychain (`desktop/keychain.py`), and every Device API call after that uses
    `Authorization: Bearer <device_token>`, never a browser session cookie (p07.md section 20).
 
+Device heartbeat is no longer this app's job - it moved to `desktop/daemon.py` so the GUI and the
+headless daemon never race each other heartbeating the same device independently. This app still
+checks Keychain for a valid token on startup exactly as before; it just doesn't keep it fresh
+itself any more.
+
 Only "google" is wired up today - GitHub device flow needs its own OAuth-console follow-up first
 (tracked separately, see cloud_client.py). Consequence for restart behavior, unchanged from
 before: "am I logged in" is still "does Keychain hold a valid device token", independent of
@@ -45,7 +50,7 @@ import webview
 
 from desktop.api import Api
 from desktop.cloud_client import CloudClient, CloudClientError, poll_device_login, start_device_login
-from desktop.config import DESKTOP_LOGIN_TIMEOUT_SECONDS, DEVICE_HEARTBEAT_INTERVAL_SECONDS
+from desktop.config import DESKTOP_LOGIN_TIMEOUT_SECONDS
 from desktop.device_info import BYTES_PER_GB, detect_hardware
 from desktop.keychain import KeychainStorage
 from desktop.state import load_state
@@ -72,12 +77,11 @@ class DesktopApp:
         self._keychain = KeychainStorage()
         self._authenticated = False
         self._login_in_progress = False
-        self._heartbeat_stop = threading.Event()
-        self._heartbeat_thread: Optional[threading.Thread] = None
         self._api = Api(
             self._state, self._keychain,
             on_logout=self._handle_logout, on_retry_login=self._handle_retry_login,
             on_start_login=self._handle_start_login,
+            on_setup_step=self._handle_setup_step,
         )
         self._window: Optional[webview.Window] = None
 
@@ -92,8 +96,6 @@ class DesktopApp:
             background_color="#A8FBD3",
             **create_kwargs,
         )
-        if self._authenticated:
-            self._start_heartbeat()
         webview.start()
 
     def _resolve_start_kwargs(self) -> dict:
@@ -207,7 +209,6 @@ class DesktopApp:
         self._authenticated = True
         if self._window is not None:
             self._window.load_url(_APP_HTML)
-        self._start_heartbeat()
 
     def _show_device_code(self, user_code: str, verification_uri: str) -> None:
         if self._window is None:
@@ -229,45 +230,31 @@ class DesktopApp:
             "document.getElementById('githubLoginBtn').disabled = false;"
         )
 
-    def _start_heartbeat(self) -> None:
-        if self._heartbeat_thread is not None:
-            return
-        self._heartbeat_thread = threading.Thread(target=self._heartbeat_loop, daemon=True)
-        self._heartbeat_thread.start()
-
-    def _heartbeat_loop(self) -> None:
-        while not self._heartbeat_stop.wait(DEVICE_HEARTBEAT_INTERVAL_SECONDS):
-            token = self._keychain.get_device_token()
-            if not token or not self._state.device_id:
-                continue
-            client = CloudClient(device_token=token)
-            try:
-                client.heartbeat(self._state.device_id)
-            except CloudClientError as e:
-                if e.is_auth_failure:
-                    self._handle_device_credential_expired()
-                    return
-                # transient/network failure -- try again next interval
-
-    def _handle_device_credential_expired(self) -> None:
-        self._authenticated = False
-        self._keychain.delete_device_token()
-        self._state.clear()
-        self._go_to_login_start()
-
     def _handle_logout(self) -> None:
         '''Clears the device credential and returns to the login-start page. Does NOT call
         Local's /logout: this app never holds Local's session cookie at all (the whole login flow
         happens in the system browser, in its own cookie jar this process never touches) - see the
         module docstring. Any lingering browser session there is left to expire on its own TTL
-        rather than being explicitly revoked - a documented trade-off, not an oversight.'''
-        self._heartbeat_stop.set()
-        self._heartbeat_thread = None
-        self._heartbeat_stop = threading.Event()
+        rather than being explicitly revoked - a documented trade-off, not an oversight.
+        Heartbeating stops on its own next tick (desktop/daemon.py checks Keychain fresh every
+        interval) - nothing here to stop directly any more.'''
         self._authenticated = False
         self._keychain.delete_device_token()
         self._state.clear()
         self._go_to_login_start()
+
+    def _handle_setup_step(self, step_name: str, status: str, detail: str) -> None:
+        '''Passed into Api as `on_setup_step` - the live progress feed for the Cluster section's
+        Setup button (desktop/cluster_manager.py/desktop/local_stack.py's `on_step` callback).
+        Pushes into the DOM the same way `_show_device_code`/`_show_login_error` already do below
+        - `window.onSetupStep` (desktop/web/static/js/app.js) owns rendering the step list itself,
+        this just delivers the event.'''
+        if self._window is None:
+            return
+        self._window.evaluate_js(
+            "window.onSetupStep && window.onSetupStep("
+            + json.dumps(step_name) + ", " + json.dumps(status) + ", " + json.dumps(detail) + ");"
+        )
 
 
 def run() -> None:

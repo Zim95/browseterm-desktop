@@ -17,8 +17,15 @@ import os
 BROWSETERM_CLOUD_API_URL: str = os.getenv("BROWSETERM_CLOUD_API_URL", "https://app.browseterm.puhtaeto.com").rstrip("/")
 
 # How often the background thread heartbeats this device (using its own long-lived device
-# credential -- see desktop/app.py's module docstring).
+# credential -- see desktop/daemon.py's module docstring; heartbeat ownership moved here from
+# desktop/app.py so the GUI and the daemon never race each other heartbeating independently).
 DEVICE_HEARTBEAT_INTERVAL_SECONDS: int = 25 * 60
+
+# How often desktop/daemon.py's health-check loop checks the Multipass VM's own state and
+# restarts any crashing monitored pod. Deliberately much shorter than the heartbeat interval --
+# this is the thing that notices "the Mac slept and multipass stopped the VM" and brings it back,
+# so it needs to run often enough that a real outage doesn't sit unnoticed for 25 minutes.
+DAEMON_HEALTH_CHECK_INTERVAL_SECONDS: int = 60
 
 # How long to keep polling Cloud's /auth/device/poll for the user to approve the device code on
 # the provider's verification page (desktop/app.py) before giving up. Generous -- this covers

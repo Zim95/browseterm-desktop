@@ -262,7 +262,6 @@ def test_full_desktop_login_flow_round_trip(monkeypatch):
     then polls (mocked) poll_device_login twice (pending, then complete) and persists the device
     token/state - proving the whole chain (app.py <-> cloud_client.py <-> keychain/state) fits
     together for the device-grant flow, not just each piece in isolation.'''
-    import threading
 
     import desktop.app as app_module
 
@@ -273,8 +272,6 @@ def test_full_desktop_login_flow_round_trip(monkeypatch):
     app._keychain = keychain
     app._authenticated = False
     app._login_in_progress = False
-    app._heartbeat_stop = threading.Event()
-    app._heartbeat_thread = None
     app._window = None  # no real WebView in this test - guarded by `if self._window is not None`
 
     captured = {}
@@ -327,7 +324,6 @@ def test_run_login_flow_threads_the_clicked_provider_through(monkeypatch):
     '''login_start.html now has two buttons (Google/GitHub) - clicking one must reach both
     start_device_login and every poll_device_login call with that same provider, not a
     hardcoded "google".'''
-    import threading
 
     import desktop.app as app_module
 
@@ -336,8 +332,6 @@ def test_run_login_flow_threads_the_clicked_provider_through(monkeypatch):
     app._keychain = _FakeKeychain()
     app._authenticated = False
     app._login_in_progress = False
-    app._heartbeat_stop = threading.Event()
-    app._heartbeat_thread = None
     app._window = None
 
     seen_providers = []

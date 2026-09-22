@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+BrowseTerm daemon LaunchAgent template. This is NOT installed automatically by any code in this
+repo - see README.md's "Daemon" section for the exact commands to fill in the two placeholders
+below and install/uninstall it yourself.
+
+RunAtLoad: starts the daemon once at login.
+KeepAlive: relaunches it if it ever exits (crash, or `python daemond.py` returning) - the "keeps
+running" half of the owner's requirement. Does not fight a deliberate `launchctl unload`, which
+removes the job from launchd entirely rather than letting it exit and relaunch.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.browseterm.daemon</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <!-- Replace with the absolute path to this repo's own poetry-managed python, e.g. the
+             output of `poetry env info --path`/bin/python run from ~/browseterm/browseterm-desktop -->
+        <string>__BROWSETERM_PYTHON__</string>
+        <!-- Replace with the absolute path to this repo's daemond.py -->
+        <string>__BROWSETERM_DAEMOND_PY__</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>__HOME__/.browseterm/daemon.log</string>
+    <key>StandardErrorPath</key>
+    <string>__HOME__/.browseterm/daemon.err.log</string>
+</dict>
+</plist>

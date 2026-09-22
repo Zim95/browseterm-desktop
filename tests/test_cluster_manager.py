@@ -46,6 +46,41 @@ def test_cluster_exists_true_when_present(monkeypatch):
     assert cluster_manager.cluster_exists() is True
 
 
+def test_vm_state_running(monkeypatch):
+    monkeypatch.setattr(cluster_manager, "subprocess", _FakeModule(_fake_run({
+        ("multipass", "info"): _FakeCompleted(0, _vm_info(state="Running"), ""),
+    })))
+    assert cluster_manager.vm_state() == "Running"
+
+
+def test_vm_state_stopped(monkeypatch):
+    monkeypatch.setattr(cluster_manager, "subprocess", _FakeModule(_fake_run({
+        ("multipass", "info"): _FakeCompleted(0, _vm_info(state="Stopped"), ""),
+    })))
+    assert cluster_manager.vm_state() == "Stopped"
+
+
+def test_vm_state_missing_when_vm_does_not_exist(monkeypatch):
+    monkeypatch.setattr(cluster_manager, "subprocess", _FakeModule(_fake_run({
+        ("multipass", "info"): _FakeCompleted(0, json.dumps({"info": {}}), ""),
+    })))
+    assert cluster_manager.vm_state() == "Missing"
+
+
+def test_vm_state_unknown_when_multipass_errors(monkeypatch):
+    monkeypatch.setattr(cluster_manager, "subprocess", _FakeModule(_fake_run({
+        ("multipass", "info"): _FakeCompleted(1, "", "some transient error"),
+    })))
+    assert cluster_manager.vm_state() == "Unknown"
+
+
+def test_start_vm_invokes_multipass_start(monkeypatch):
+    fake = _fake_run({})
+    monkeypatch.setattr(cluster_manager, "subprocess", _FakeModule(fake))
+    cluster_manager.start_vm()
+    assert ["multipass", "start", cluster_manager.VM_NAME] in fake.calls
+
+
 def test_cluster_exists_false_when_multipass_errors(monkeypatch):
     monkeypatch.setattr(cluster_manager, "subprocess", _FakeModule(_fake_run({
         ("multipass", "info"): _FakeCompleted(1, "", "instance does not exist"),

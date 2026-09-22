@@ -1,20 +1,25 @@
 # browseterm-desktop
 
-Mac-only desktop app: login (an OAuth Device Authorization Grant against Cloud directly - see
-"Login" below; Google/GitHub OAuth is entirely Cloud's job, this app never holds a provider
-secret), a Cluster section (stands up/tears down a real **Multipass VM running k3s** + the current
-local-stack workloads - `desktop/cluster_manager.py`/`desktop/local_stack.py`), a Device page
-(hardware detection + activation against Cloud's Device API), and a background device heartbeat.
-Built with `pywebview`.
+Two processes, deliberately separate rather than one thing trying to be both:
+
+- **The GUI app** (`main.py` -> `desktop/app.py`, built with `pywebview`): login (an OAuth Device
+  Authorization Grant against Cloud directly - see "Login" below), a Cluster section (stands
+  up/tears down a real **Multipass VM running k3s** + the current local-stack workloads, with live
+  step-by-step Setup progress - see "Cluster section"), and a Device page (hardware detection +
+  activation against Cloud's Device API).
+- **The daemon** (`daemond.py` -> `desktop/daemon.py`, headless, no window): owns the device
+  heartbeat and a cluster health-check loop, meant to run continuously under macOS `launchd` -
+  see "Daemon" below.
 
 ## Run it
 
 ```
 poetry install
-poetry run python main.py
+poetry run python main.py      # the GUI app
+poetry run python daemond.py   # the background daemon (see "Daemon" for running it under launchd instead)
 ```
 
-By default this points at `https://app.browseterm.puhtaeto.com` (real, live Cloud) -- override
+By default both point at `https://app.browseterm.puhtaeto.com` (real, live Cloud) -- override
 with the `BROWSETERM_CLOUD_API_URL` env var for local development against an instance running on
 this machine instead.
 
@@ -33,8 +38,13 @@ server) is no longer deployed at all - migration Part 3 moved the browser UI to 
 
 Both `create_cluster()` and `deploy()` accept an optional `on_step(name, status, detail)` callback
 reporting each real step ("Creating Multipass VM", "Installing k3s", "Deploying Container Maker",
-...) as started/succeeded/failed - not yet consumed by this app's own UI (a later phase's job), but
-the interface exists now for that phase to build on.
+...) as started/succeeded/failed. The Setup button's live progress list in the GUI is this
+callback end to end: `Api.setup_cluster` defaults `on_step` to whatever `on_setup_step` the `Api`
+was constructed with (`desktop/app.py`'s `_handle_setup_step`), which pushes each event into the
+WebView's own DOM via `evaluate_js` - the same mechanism the login flow's device-code display
+already used (`_show_device_code`). `desktop/web/static/js/app.js`'s `window.onSetupStep` renders
+one row per step, in the order they actually arrive (not a hardcoded list - it doesn't need to
+know the steps ahead of time), showing pending/in-progress/done/failed.
 
 The Setup button additionally needs `BROWSETERM_CLOUD_INTERNAL_API_TOKEN` (byte-identical to
 Cloud's own `CLOUD_INTERNAL_API_TOKEN`) - container-maker, status_monitor, reaper, and snapshot_job
@@ -105,9 +115,9 @@ token on startup skips the login page entirely and goes straight to the Device p
   swapped away from it. If the token is genuinely missing (e.g. after logout), the answer is "log
   out and log back in", not a hidden second bootstrap path here (p07.md: "do not unnecessarily
   expand P07 into device-management UI").
-- **Heartbeat**: a background thread heartbeats the device (its own long-lived credential,
-  independent of the browser session) every 25 minutes (`desktop/config.py`,
-  `DEVICE_HEARTBEAT_INTERVAL_SECONDS`) so its `status`/`last_seen_at` stay fresh.
+- **Heartbeat**: owned by the daemon now, not the GUI app - see "Daemon" below. The GUI still only
+  ever checks Keychain for a valid token to decide "am I logged in"; it doesn't keep that token's
+  device fresh itself any more.
 - **State**: `~/.browseterm/desktop_state.json` (0600) persists only the last-activated device
   id/name (not secret - an identifier, not a credential) across restarts, so the Device page can
   show something immediately. The device credential itself lives only in Keychain.
@@ -115,6 +125,55 @@ token on startup skips the login page entirely and goes straight to the Device p
   never holds a Local session cookie at all any more (login talks only to Cloud - see above), so
   there's nothing Local-side to revoke; any approved-but-unused device grant on the provider's
   side is left to expire on its own.
+
+## Daemon
+
+`desktop/daemon.py` (`daemond.py` is its entrypoint) is a headless process - no pywebview window -
+with two responsibilities, both no-ops until a device is actually logged in (a Keychain token +
+`device_id`) and, for the second one, until a cluster has actually been set up at least once via
+the GUI (this daemon never performs first-ever Setup itself, since that needs a resource
+allocation choice only the GUI collects):
+
+1. **Device heartbeat** (`DEVICE_HEARTBEAT_INTERVAL_SECONDS`, 25 minutes) - moved here from the
+   GUI app so the two processes never race each other heartbeating the same device independently.
+   A 401 (revoked/expired credential) clears Keychain + local state so the GUI's own login check
+   correctly falls back to the login page next time it's opened; any other failure is left for the
+   next tick, same as before.
+2. **Cluster health check** (`DAEMON_HEALTH_CHECK_INTERVAL_SECONDS`, 60 seconds) - checks
+   `cluster_manager.vm_state()` and calls `start_vm()` if the Multipass VM isn't `Running` (the
+   real "the Mac slept and multipass stopped the VM" recovery case - Device Agent's own gRPC
+   stream already reconnects on its own once its pod is running again, per its capped-backoff
+   design; nothing previously brought the VM itself back up, though), then restarts any actually
+   crashing monitored pod via `restart_pod()` (never a pod that's merely still starting up - see
+   `cluster_manager._is_crashing`'s own reason list).
+
+### Running it under launchd
+
+`packaging/com.browseterm.daemon.plist` is a template - `RunAtLoad` starts it at login,
+`KeepAlive` relaunches it if it ever exits. Fill in the two placeholders and install it yourself
+(this repo never runs `launchctl` on its own behalf):
+
+```
+# From this repo's root:
+PYTHON_BIN="$(poetry env info --path)/bin/python"
+DAEMOND_PY="$(pwd)/daemond.py"
+
+sed -e "s#__BROWSETERM_PYTHON__#${PYTHON_BIN}#" \
+    -e "s#__BROWSETERM_DAEMOND_PY__#${DAEMOND_PY}#" \
+    -e "s#__HOME__#${HOME}#g" \
+    packaging/com.browseterm.daemon.plist > ~/Library/LaunchAgents/com.browseterm.daemon.plist
+
+launchctl load -w ~/Library/LaunchAgents/com.browseterm.daemon.plist
+```
+
+To stop it (temporarily, without removing the LaunchAgent) or uninstall it entirely:
+
+```
+launchctl unload ~/Library/LaunchAgents/com.browseterm.daemon.plist   # stop
+rm ~/Library/LaunchAgents/com.browseterm.daemon.plist                 # + this, to uninstall for good
+```
+
+Logs land at `~/.browseterm/daemon.log`/`daemon.err.log`.
 
 ## Tests
 
@@ -131,4 +190,6 @@ wrong-CSRF rejection, second-redemption-of-a-code failing, device-token-scoped c
 Keychain storage abstraction being swappable (a `_FakeKeychain` stands in, matching p07.md section
 22's "use an abstraction so unit tests can mock storage"), and `Api.activate_device()`'s friendly
 error when no credential exists yet. `tests/test_cluster_manager.py`/`tests/test_api_cluster.py`/
-`tests/test_local_stack.py` cover the Cluster section separately.
+`tests/test_local_stack.py` cover the Cluster section separately (including the live-progress
+`on_setup_step` wiring), and `tests/test_daemon.py` covers the daemon's heartbeat/health-check
+logic directly (calling `_heartbeat_once`/`_health_check_once`, not the real sleeping loops).
