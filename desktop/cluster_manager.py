@@ -242,24 +242,31 @@ set -euo pipefail
 ARCH="$(uname -m)"   # aarch64 on Apple Silicon, x86_64 on Intel - gVisor publishes both
 TMPL=/var/lib/rancher/k3s/agent/etc/containerd/config.toml.tmpl
 
-if command -v runsc >/dev/null 2>&1; then
+if command -v runsc >/dev/null 2>&1 && [ -x /usr/local/bin/gvisor-bin/gvisor_sentry ]; then
   echo "  runsc already installed ($(runsc --version | head -1))"
 else
   # gVisor stopped publishing standalone runsc/containerd-shim-runsc-v1 binaries at their old
   # per-file URLs (${URL}/runsc etc. now 404) - the release is a single bundled archive now, with
-  # one sha512 for the whole archive rather than one per binary. Both binaries this project needs
-  # sit at the archive's own root alongside an unrelated gvisor-bin/ directory of extra tools
-  # (checkpointgofer, gvisor_sentry, ...) this project doesn't use - `tar` is told to extract only
-  # the two names it wants. zstd (not bzip2) is what Ubuntu 22.04's cloud image actually ships, so
-  # that's the archive variant fetched (`gvisor.tar.zstd`, not the also-published `.tar.bz2`).
+  # one sha512 for the whole archive rather than one per binary. runsc/containerd-shim-runsc-v1
+  # sit at the archive's own root; a gvisor-bin/ subdirectory holds extra tools alongside them
+  # (checkpointgofer, gvisor-sentry-prewarmer, gvisor_sentry, runsc-fd-parking,
+  # runsc-metric-server). gvisor_sentry was assumed unused here and left out, but the runsc shim
+  # actually requires it at container-creation time now (it runs the sandboxed process as a
+  # separate "sidecar" it execs into via --sidecar-usage-policy=STRICT) - without it every pod's
+  # sandbox creation fails outright ("sidecar gvisor_sentry not usable ... no such file or
+  # directory"), which stays Pending/ContainerCreating forever from Kubernetes' side. zstd (not
+  # bzip2) is what Ubuntu 22.04's cloud image actually ships, so that's the archive variant
+  # fetched (`gvisor.tar.zstd`, not the also-published `.tar.bz2`).
   echo "  downloading gvisor release archive (${ARCH})"
   URL="https://storage.googleapis.com/gvisor/releases/release/latest/${ARCH}"
   workdir="$(mktemp -d)"; cd "$workdir"
   wget -q "${URL}/gvisor.tar.zstd" "${URL}/gvisor.tar.zstd.sha512"
   sha512sum -c gvisor.tar.zstd.sha512
-  tar --zstd -xf gvisor.tar.zstd runsc containerd-shim-runsc-v1
-  chmod a+rx runsc containerd-shim-runsc-v1
+  tar --zstd -xf gvisor.tar.zstd runsc containerd-shim-runsc-v1 gvisor-bin/gvisor_sentry
+  chmod a+rx runsc containerd-shim-runsc-v1 gvisor-bin/gvisor_sentry
   mv runsc containerd-shim-runsc-v1 /usr/local/bin/
+  mkdir -p /usr/local/bin/gvisor-bin
+  mv gvisor-bin/gvisor_sentry /usr/local/bin/gvisor-bin/gvisor_sentry
   cd /; rm -rf "$workdir"
   echo "  installed $(runsc --version | head -1)"
 fi
@@ -286,9 +293,12 @@ fi
 
 def _install_gvisor() -> None:
     """Idempotent (mirrors scripts/setup.k3s.sh's own GVISOR block verbatim) - skips the download
-    if runsc is already installed, only (re)writes the containerd template + restarts k3s when the
-    runsc runtime block is missing. The RuntimeClass object itself (a cluster resource, not a node
-    one) is applied by local_stack.py's deploy(), not here - same split scripts/setup.k3s.sh and
+    only when both runsc AND gvisor_sentry are already installed, only (re)writes the containerd
+    template + restarts k3s when the runsc runtime block is missing. Re-running Setup against a VM
+    that already has runsc but is missing gvisor_sentry (every VM set up before that binary was
+    added here) re-downloads the archive and installs just the missing piece - runsc itself is
+    left untouched. The RuntimeClass object itself (a cluster resource, not a node one) is applied
+    by local_stack.py's deploy(), not here - same split scripts/setup.k3s.sh and
     scripts/deploy.k3s.sh already used."""
     _multipass_exec(["sudo", "bash", "-c", _GVISOR_INSTALL_SCRIPT], timeout=_GVISOR_INSTALL_TIMEOUT_SECONDS)
     _wait_for_node_ready()

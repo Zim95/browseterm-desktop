@@ -326,6 +326,24 @@ def test_install_gvisor_skips_download_when_runsc_already_present(monkeypatch):
     assert "containerd.runtimes.runsc" in gvisor_call[-1]
 
 
+def test_install_gvisor_fetches_and_installs_gvisor_sentry():
+    '''
+    Regression test for a real production bug: the install script only extracted
+    runsc/containerd-shim-runsc-v1 from the release archive, explicitly treating gvisor_sentry
+    (from the archive's gvisor-bin/ subdirectory) as an unused extra - but the runsc shim actually
+    requires it at container-creation time ("sidecar gvisor_sentry not usable ... no such file or
+    directory", --sidecar-usage-policy=STRICT), so every pod's sandbox creation failed outright
+    and stayed Pending/ContainerCreating forever, on every VM this Setup flow had ever built.
+    '''
+    script = cluster_manager._GVISOR_INSTALL_SCRIPT
+    assert "gvisor-bin/gvisor_sentry" in script
+    assert "/usr/local/bin/gvisor-bin/gvisor_sentry" in script
+    # The idempotency check must not skip re-installing on a VM that already has runsc but is
+    # missing gvisor_sentry (every VM built before this fix) - re-running Setup against one must
+    # detect and fix the gap, not silently declare success because runsc alone is present.
+    assert "-x /usr/local/bin/gvisor-bin/gvisor_sentry" in script
+
+
 def test_install_gvisor_waits_for_node_ready_again(monkeypatch):
     """gVisor's containerd-template write path restarts k3s (see the script's own comment) -
     _install_gvisor must wait for the node to come back Ready, the same way _install_k3s already
