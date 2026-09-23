@@ -36,9 +36,70 @@ def test_ensure_device_credential_secret_uses_correct_key_names(monkeypatch):
     calls = []
     monkeypatch.setattr(local_stack, "_create_or_update", lambda cmd: calls.append(cmd))
     local_stack._ensure_device_credential_secret("dev-123", "tok-abc")
-    (cmd,) = calls
+    cmd = next(c for c in calls if "browseterm-device-credential" in c)
     assert "--from-literal=device_id=dev-123" in cmd
     assert "--from-literal=token=tok-abc" in cmd
+
+
+def test_ensure_device_credential_secret_also_creates_tunnel_registrar_device_id_secret(monkeypatch):
+    """tunnel-registrar's container (socket-ssh's own manifest) reads DEVICE_ID from a
+    *differently-named* Secret - `device-credentials` (plural, unprefixed) with key `DEVICE_ID`
+    (uppercase) - not `browseterm-device-credential`'s `device_id` (lowercase). Real, separate
+    Secret by design (that manifest's own comment: DEVICE_ID is "only a non-credential identifier
+    for logging"), just one nothing created until this - caught for real via
+    CreateContainerConfigError on a live tunnel-registrar container."""
+    calls = []
+    monkeypatch.setattr(local_stack, "_create_or_update", lambda cmd: calls.append(cmd))
+    local_stack._ensure_device_credential_secret("dev-123", "tok-abc")
+    cmd = next(c for c in calls if "device-credentials" in c)
+    assert "--from-literal=DEVICE_ID=dev-123" in cmd
+
+
+def test_build_tunnel_registrar_image_calls_prod_build(monkeypatch):
+    """tunnel_registrar (the sidecar bundled in socket-ssh's ngrok-agent Deployment) had no
+    build/deploy tooling before this - `zim95/tunnel-registrar` didn't exist on Docker Hub at all,
+    so its container could never leave ImagePullBackOff regardless of anything else succeeding."""
+    calls = []
+    monkeypatch.setattr(local_stack, "_make", lambda repo, target, **kw: calls.append((repo, target, kw)))
+    local_stack._build_tunnel_registrar_image()
+    (call,) = calls
+    assert call[0] == "tunnel_registrar"
+    assert call[1] == "prod_build"
+
+
+def test_ensure_container_maker_repo_credentials_secret_uses_correct_key_names(monkeypatch):
+    """Keys must be literally `REPO_NAME`/`REPO_PASSWORD` - container-maker's own manifest
+    (infra/k8s/deployment/deployment.yaml) reads this Secret via secretKeyRef with those exact
+    names, documented in a comment right above the env block that expects it to already exist."""
+    monkeypatch.setattr(local_stack, "DOCKER_HUB_REPO_NAME", "zim95")
+    monkeypatch.setattr(local_stack, "DOCKER_HUB_REPO_PASSWORD", "test-repo-password")
+    calls = []
+    monkeypatch.setattr(local_stack, "_create_or_update", lambda cmd: calls.append(cmd))
+    local_stack._ensure_container_maker_repo_credentials_secret()
+    (cmd,) = calls
+    assert "container-maker-repo-credentials" in cmd
+    assert "--from-literal=REPO_NAME=zim95" in cmd
+    assert "--from-literal=REPO_PASSWORD=test-repo-password" in cmd
+
+
+def test_ensure_ngrok_credentials_secret_uses_correct_key_name(monkeypatch):
+    """Key must be literally `NGROK_AUTHTOKEN` - socket-ssh's ngrok-agent sidecar container reads
+    it via secretKeyRef with that exact key name (infra/deployment/deployment.yaml)."""
+    monkeypatch.setattr(local_stack, "NGROK_AUTHTOKEN", "test-ngrok-token")
+    calls = []
+    monkeypatch.setattr(local_stack, "_create_or_update", lambda cmd: calls.append(cmd))
+    local_stack._ensure_ngrok_credentials_secret()
+    (cmd,) = calls
+    assert "--from-literal=NGROK_AUTHTOKEN=test-ngrok-token" in cmd
+    assert "ngrok-credentials" in cmd
+
+
+def test_ensure_ngrok_credentials_secret_does_not_raise_when_token_empty(monkeypatch):
+    """Unlike the internal API token, a missing NGROK_AUTHTOKEN is soft - the rest of the stack
+    must still deploy; only the ngrok-agent container itself fails to authenticate at runtime."""
+    monkeypatch.setattr(local_stack, "NGROK_AUTHTOKEN", "")
+    monkeypatch.setattr(local_stack, "_create_or_update", lambda cmd: None)
+    local_stack._ensure_ngrok_credentials_secret()  # must not raise
 
 
 def test_resolve_cloud_ingress_host_ip_uses_real_dns(monkeypatch):
@@ -59,9 +120,10 @@ def test_deploy_calls_every_step_in_order(monkeypatch):
     order = []
     for name in (
         "_ensure_namespace", "_ensure_internal_api_token_secret", "_ensure_device_credential_secret",
+        "_ensure_container_maker_repo_credentials_secret", "_ensure_ngrok_credentials_secret",
         "_deploy_gvisor_runtimeclass", "_deploy_minio", "_deploy_cert_manager", "_deploy_container_maker",
         "_build_device_agent_image", "_deploy_device_agent",
-        "_deploy_status_monitor", "_deploy_reaper", "_deploy_socket_ssh",
+        "_deploy_status_monitor", "_deploy_reaper", "_build_tunnel_registrar_image", "_deploy_socket_ssh",
     ):
         monkeypatch.setattr(local_stack, name, lambda *a, n=name, **kw: order.append(n))
     monkeypatch.setattr(local_stack, "_run", lambda *a, **kw: "")
@@ -71,18 +133,20 @@ def test_deploy_calls_every_step_in_order(monkeypatch):
 
     assert order == [
         "_ensure_namespace", "_ensure_internal_api_token_secret", "_ensure_device_credential_secret",
+        "_ensure_container_maker_repo_credentials_secret", "_ensure_ngrok_credentials_secret",
         "_deploy_gvisor_runtimeclass", "_deploy_minio", "_deploy_cert_manager", "_deploy_container_maker",
         "_build_device_agent_image", "_deploy_device_agent",
-        "_deploy_status_monitor", "_deploy_reaper", "_deploy_socket_ssh",
+        "_deploy_status_monitor", "_deploy_reaper", "_build_tunnel_registrar_image", "_deploy_socket_ssh",
     ]
 
 
 def test_deploy_reports_steps_via_on_step(monkeypatch):
     for name in (
         "_ensure_namespace", "_ensure_internal_api_token_secret", "_ensure_device_credential_secret",
+        "_ensure_container_maker_repo_credentials_secret", "_ensure_ngrok_credentials_secret",
         "_deploy_gvisor_runtimeclass", "_deploy_minio", "_deploy_cert_manager", "_deploy_container_maker",
         "_build_device_agent_image", "_deploy_device_agent",
-        "_deploy_status_monitor", "_deploy_reaper", "_deploy_socket_ssh",
+        "_deploy_status_monitor", "_deploy_reaper", "_build_tunnel_registrar_image", "_deploy_socket_ssh",
     ):
         monkeypatch.setattr(local_stack, name, lambda *a, **kw: None)
     monkeypatch.setattr(local_stack, "_run", lambda *a, **kw: "")
@@ -155,6 +219,7 @@ def test_deploy_socket_ssh_no_longer_passes_cloud_config(monkeypatch):
     BROWSETERM_CLOUD_API_URL/CLOUD_INGRESS_HOST(_IP)/DEVICE_TOKEN of any kind any more."""
     calls = []
     monkeypatch.setattr(local_stack, "_make", lambda *a, **kw: calls.append((a, kw)))
+    monkeypatch.setattr(local_stack, "_restart_deployment", lambda name: None)
     local_stack._deploy_socket_ssh()
     (args, kwargs) = calls[0]
     assert args == ("socket-ssh", "prod_setup")
@@ -162,3 +227,33 @@ def test_deploy_socket_ssh_no_longer_passes_cloud_config(monkeypatch):
     assert "BROWSETERM_CLOUD_API_URL" not in kwargs
     assert "CLOUD_INGRESS_HOST" not in kwargs
     assert "CLOUD_INGRESS_HOST_IP" not in kwargs
+
+
+def test_deploy_socket_ssh_restarts_ngrok_agent(monkeypatch):
+    """A rebuilt tunnel-registrar image only takes effect if something actually cycles the
+    ngrok-agent Deployment - `kubectl apply` alone is a no-op against an unchanged ":latest"
+    manifest string (see _restart_deployment's own docstring)."""
+    monkeypatch.setattr(local_stack, "_make", lambda *a, **kw: None)
+    restarted = []
+    monkeypatch.setattr(local_stack, "_restart_deployment", lambda name: restarted.append(name))
+    local_stack._deploy_socket_ssh()
+    assert restarted == ["ngrok-agent"]
+
+
+def test_deploy_device_agent_restarts_itself(monkeypatch):
+    """Same reasoning as test_deploy_socket_ssh_restarts_ngrok_agent - caught for real via a
+    stale image digest (kubectl's reported imageID didn't match a fresh `docker pull` of the same
+    tag) after a rebuilt device-agent image was pushed but nothing restarted the running pod."""
+    monkeypatch.setattr(local_stack, "_make", lambda *a, **kw: None)
+    restarted = []
+    monkeypatch.setattr(local_stack, "_restart_deployment", lambda name: restarted.append(name))
+    local_stack._deploy_device_agent()
+    assert restarted == ["browseterm-device-agent"]
+
+
+def test_restart_deployment_issues_rollout_restart(monkeypatch):
+    calls = []
+    monkeypatch.setattr(local_stack, "_run", lambda cmd: calls.append(cmd))
+    local_stack._restart_deployment("browseterm-device-agent")
+    (cmd,) = calls
+    assert cmd[-3:] == ["rollout", "restart", "deployment/browseterm-device-agent"]

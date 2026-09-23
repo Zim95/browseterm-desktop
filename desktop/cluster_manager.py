@@ -39,8 +39,18 @@ UBUNTU_IMAGE = os.getenv("BROWSETERM_MULTIPASS_IMAGE", "22.04")
 KUBE_CONFIG_PATH = os.path.expanduser(os.getenv("KUBECONFIG", "~/.kube/config"))
 
 _DEFAULT_TIMEOUT_SECONDS = 30.0
-_LAUNCH_TIMEOUT_SECONDS = 180.0
-_K3S_INSTALL_TIMEOUT_SECONDS = 150.0
+# `multipass launch` includes a cold-cache full image download, not just VM boot - on a fresh
+# machine (or right after a corrupted-cache purge) that's a gigabyte-scale fetch over the
+# ubuntu-22.04-server-cloudimg archive, which alone can take several minutes on an ordinary home
+# connection, before cloud-init even starts. 180s was only ever enough for a warm-cache relaunch;
+# measured against a real ~2.5MB/s connection, a cold download plus boot needs headroom well past
+# that.
+_LAUNCH_TIMEOUT_SECONDS = 900.0
+# Same real-world headroom as native_k3s.py's own _K3S_INSTALL_TIMEOUT_SECONDS (the k3s install
+# script downloads the k3s binary from GitHub releases at install time) - this constant was missed
+# in that earlier pass since it lives in this module, not native_k3s.py, and caught the exact same
+# way: a re-run against an already-running VM under host load timed out at 150s here too.
+_K3S_INSTALL_TIMEOUT_SECONDS = 300.0
 _K3S_READY_TIMEOUT_SECONDS = 90.0
 _DELETE_TIMEOUT_SECONDS = 60.0
 _GVISOR_INSTALL_TIMEOUT_SECONDS = 120.0
@@ -168,15 +178,28 @@ def _multipass_exec(args: list[str], timeout: float = _DEFAULT_TIMEOUT_SECONDS) 
 def _create_vm(cpu_cores: int, memory_gb: float, storage_gb: float) -> None:
     if cluster_exists():
         return
-    _run(
-        [
-            "multipass", "launch", UBUNTU_IMAGE, "--name", VM_NAME,
-            "--cpus", str(cpu_cores),
-            "--memory", f"{memory_gb:g}G",
-            "--disk", f"{storage_gb:g}G",
-        ],
-        timeout=_LAUNCH_TIMEOUT_SECONDS,
-    )
+    # cluster_exists() itself can false-negative under host load - it runs `multipass info` with
+    # only _DEFAULT_TIMEOUT_SECONDS (30s) and treats ANY failure there (including a timeout) as
+    # "doesn't exist" (see its own body), since a genuinely-missing VM and a slow/failed check are
+    # indistinguishable from a plain ClusterError alone. Caught for real: with the host under load
+    # (a concurrent docker build, in this project's own case), `multipass info` timed out, this
+    # function concluded the VM was missing, and `multipass launch` below hit multipass's own
+    # authoritative "instance already exists" rejection - so that specific failure is treated as
+    # success here rather than propagated, instead of tightening yet another timeout that would
+    # just move the same race somewhere else under sufficiently bad load.
+    try:
+        _run(
+            [
+                "multipass", "launch", UBUNTU_IMAGE, "--name", VM_NAME,
+                "--cpus", str(cpu_cores),
+                "--memory", f"{memory_gb:g}G",
+                "--disk", f"{storage_gb:g}G",
+            ],
+            timeout=_LAUNCH_TIMEOUT_SECONDS,
+        )
+    except ClusterError as e:
+        if "already exists" not in str(e):
+            raise
 
 
 def _install_k3s() -> None:
@@ -222,13 +245,19 @@ TMPL=/var/lib/rancher/k3s/agent/etc/containerd/config.toml.tmpl
 if command -v runsc >/dev/null 2>&1; then
   echo "  runsc already installed ($(runsc --version | head -1))"
 else
-  echo "  downloading runsc + containerd-shim-runsc-v1 (${ARCH})"
+  # gVisor stopped publishing standalone runsc/containerd-shim-runsc-v1 binaries at their old
+  # per-file URLs (${URL}/runsc etc. now 404) - the release is a single bundled archive now, with
+  # one sha512 for the whole archive rather than one per binary. Both binaries this project needs
+  # sit at the archive's own root alongside an unrelated gvisor-bin/ directory of extra tools
+  # (checkpointgofer, gvisor_sentry, ...) this project doesn't use - `tar` is told to extract only
+  # the two names it wants. zstd (not bzip2) is what Ubuntu 22.04's cloud image actually ships, so
+  # that's the archive variant fetched (`gvisor.tar.zstd`, not the also-published `.tar.bz2`).
+  echo "  downloading gvisor release archive (${ARCH})"
   URL="https://storage.googleapis.com/gvisor/releases/release/latest/${ARCH}"
   workdir="$(mktemp -d)"; cd "$workdir"
-  for f in runsc containerd-shim-runsc-v1; do
-    wget -q "${URL}/${f}" "${URL}/${f}.sha512"
-  done
-  sha512sum -c runsc.sha512 containerd-shim-runsc-v1.sha512
+  wget -q "${URL}/gvisor.tar.zstd" "${URL}/gvisor.tar.zstd.sha512"
+  sha512sum -c gvisor.tar.zstd.sha512
+  tar --zstd -xf gvisor.tar.zstd runsc containerd-shim-runsc-v1
   chmod a+rx runsc containerd-shim-runsc-v1
   mv runsc containerd-shim-runsc-v1 /usr/local/bin/
   cd /; rm -rf "$workdir"
@@ -281,7 +310,14 @@ def _fetch_and_merge_kubeconfig() -> None:
     # context. Matches on the exact field patterns k3s's fixed-shape output always uses, not a
     # blanket string replace, so this stays correct even if "default" ever appeared as a namespace
     # or other unrelated value elsewhere in the file.
-    for pattern in (r"^(\s*name:\s*)default\s*$", r"^(\s*cluster:\s*)default\s*$",
+    # `users:`' own list item writes "name:" as its FIRST field, right after the "- " list marker
+    # (`- name: default`), unlike `clusters:`/`contexts:` where "name:" is a later sibling key on
+    # its own indented line (`  name: default`) - a line starting with a literal "-" doesn't match
+    # a plain `^\s*name:` prefix, so the "name:" pattern below has to allow an optional leading
+    # "- " (not just whitespace) to catch both shapes, or the users: entry silently keeps its old
+    # "default" name while cluster/context/current-context all get renamed around it - exactly the
+    # dangling "context references nonexistent user" break this fixes.
+    for pattern in (r"^(\s*(?:-\s+)?name:\s*)default\s*$", r"^(\s*cluster:\s*)default\s*$",
                     r"^(\s*user:\s*)default\s*$", r"^(current-context:\s*)default\s*$"):
         rewritten = re.sub(pattern, rf"\g<1>{KUBE_CONTEXT}", rewritten, flags=re.MULTILINE)
 

@@ -37,7 +37,10 @@ K3S_VERSION = os.getenv("BROWSETERM_K3S_VERSION", "v1.31.2+k3s1")
 K3S_KUBECONFIG_PATH = "/etc/rancher/k3s/k3s.yaml"
 KUBE_CONFIG_PATH = os.path.expanduser(os.getenv("KUBECONFIG", "~/.kube/config"))
 
-_K3S_INSTALL_TIMEOUT_SECONDS = 150.0
+# See cluster_manager.py's own _LAUNCH_TIMEOUT_SECONDS comment - k3s's install script downloads
+# the k3s binary from GitHub releases at install time, so the same network-variance headroom
+# applies here, even without a VM's own cold-image-download cost on top.
+_K3S_INSTALL_TIMEOUT_SECONDS = 300.0
 _K3S_READY_TIMEOUT_SECONDS = 90.0
 _GVISOR_INSTALL_TIMEOUT_SECONDS = 120.0
 _UNINSTALL_TIMEOUT_SECONDS = 60.0
@@ -90,7 +93,14 @@ def _merge_kubeconfig() -> None:
         raw = f.read()
 
     rewritten = raw
-    for pattern in (r"^(\s*name:\s*)default\s*$", r"^(\s*cluster:\s*)default\s*$",
+    # See cluster_manager._fetch_and_merge_kubeconfig's own docstring for why the "name:" pattern
+    # needs the optional leading "- " - users:' own list item writes "name:" as its first field
+    # right after the "- " list marker (`- name: default`), unlike clusters:/contexts: where
+    # "name:" is a later sibling key on its own indented line (`  name: default`); without the
+    # "- " alternative this leaves users:'s entry silently named "default" while cluster/context/
+    # current-context all get renamed around it, so the browseterm context ends up pointing at a
+    # user that doesn't exist.
+    for pattern in (r"^(\s*(?:-\s+)?name:\s*)default\s*$", r"^(\s*cluster:\s*)default\s*$",
                     r"^(\s*user:\s*)default\s*$", r"^(current-context:\s*)default\s*$"):
         rewritten = re.sub(pattern, rf"\g<1>{KUBE_CONTEXT}", rewritten, flags=re.MULTILINE)
 

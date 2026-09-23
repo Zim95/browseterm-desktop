@@ -120,8 +120,17 @@ def test_merge_kubeconfig_renames_default_and_skips_ip_rewrite(monkeypatch, tmp_
     monkeypatch.setattr(native_k3s, "K3S_KUBECONFIG_PATH", str(k3s_yaml))
     monkeypatch.setattr(native_k3s, "KUBE_CONFIG_PATH", str(kubeconfig_path))
 
+    rewritten_holder = {}
+
     def run(cmd, **kwargs):
         if cmd[:2] == ["kubectl", "config"] and "view" in cmd:
+            # Read back the actual rewritten temp file (see
+            # test_fetch_and_merge_kubeconfig_renames_default_and_rewrites_server in
+            # test_cluster_manager.py for why this - a canned "merged-output" stand-in never
+            # exercises the regex under test at all).
+            fetched_path = kwargs["env"]["KUBECONFIG"].split(":")[1]
+            with open(fetched_path) as f:
+                rewritten_holder["content"] = f.read()
             return _FakeCompleted(0, "merged-output", "")
         if cmd[:3] == ["kubectl", "config", "use-context"]:
             return _FakeCompleted(0, "", "")
@@ -131,6 +140,10 @@ def test_merge_kubeconfig_renames_default_and_skips_ip_rewrite(monkeypatch, tmp_
     monkeypatch.setattr(cluster_manager, "subprocess", _FakeModule(run))
     native_k3s._merge_kubeconfig()
     assert kubeconfig_path.read_text() == "merged-output"
+
+    rewritten = rewritten_holder["content"]
+    assert "default" not in rewritten
+    assert "- name: browseterm" in rewritten
 
 
 def test_delete_cluster_runs_uninstall_script_when_present(monkeypatch):

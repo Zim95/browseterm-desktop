@@ -57,7 +57,7 @@ LOCAL_STACK_REPOS_DIR: str = os.path.expanduser(os.getenv("LOCAL_STACK_REPOS_DIR
 CLOUD_INTERNAL_API_TOKEN_FILE: str = os.path.join(STATE_DIR, "cloud_internal_api_token")
 
 
-def _read_local_cloud_internal_api_token(path: str) -> str:
+def _read_local_token_file(path: str) -> str:
     try:
         with open(path) as f:
             return f.read().strip()
@@ -66,7 +66,7 @@ def _read_local_cloud_internal_api_token(path: str) -> str:
 
 
 BROWSETERM_CLOUD_INTERNAL_API_TOKEN: str = (
-    os.getenv("BROWSETERM_CLOUD_INTERNAL_API_TOKEN") or _read_local_cloud_internal_api_token(CLOUD_INTERNAL_API_TOKEN_FILE)
+    os.getenv("BROWSETERM_CLOUD_INTERNAL_API_TOKEN") or _read_local_token_file(CLOUD_INTERNAL_API_TOKEN_FILE)
 )
 
 # Docker Hub account the local-stack images are pulled from (docker.io/<name>/<component>:latest).
@@ -75,3 +75,12 @@ BROWSETERM_CLOUD_INTERNAL_API_TOKEN: str = (
 # meaning the terminal itself works fine but Save will fail until a real value is supplied.
 DOCKER_HUB_REPO_NAME: str = os.getenv("DOCKER_HUB_REPO_NAME", "zim95")
 DOCKER_HUB_REPO_PASSWORD: str = os.getenv("DOCKER_HUB_REPO_PASSWORD", "")
+
+# socket-ssh's `ngrok-agent` sidecar (infra/deployment/deployment.yaml) reads NGROK_AUTHTOKEN from
+# a `ngrok-credentials` Secret local_stack.py creates from this value - same file-or-env-var,
+# 0600-in-~/.browseterm convention as CLOUD_INTERNAL_API_TOKEN_FILE above. Left blank by default:
+# the rest of the local stack (terminal creation, container-maker, etc.) works fine without it, but
+# socket-ssh's ngrok-agent container can't start without a real token (CreateContainerConfigError),
+# so remote tunnel access specifically won't work until one is supplied.
+NGROK_AUTHTOKEN_FILE: str = os.path.join(STATE_DIR, "ngrok_authtoken")
+NGROK_AUTHTOKEN: str = os.getenv("NGROK_AUTHTOKEN") or _read_local_token_file(NGROK_AUTHTOKEN_FILE)

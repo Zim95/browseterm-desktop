@@ -119,6 +119,44 @@ def test_create_cluster_launches_when_vm_absent(monkeypatch):
     assert calls_seen["launch"] is True
 
 
+def test_create_cluster_tolerates_already_exists_race(monkeypatch):
+    """cluster_exists() can false-negative under host load (its own `multipass info` call times
+    out, caught as a plain ClusterError and reported as "doesn't exist" - see its own docstring in
+    cluster_manager.py). When that happens, `multipass launch` itself is the authoritative check:
+    if IT says the instance already exists, create_cluster must treat that as success, not
+    propagate a failure for a VM that was fine the whole time - caught for real against this
+    project's own hardware under load."""
+
+    def run(cmd, **kwargs):
+        if cmd[:2] == ["multipass", "info"]:
+            return _FakeCompleted(1, "", "info timed out")  # cluster_exists() false-negatives
+        if cmd[:2] == ["multipass", "launch"]:
+            return _FakeCompleted(1, "", "launch failed: instance \"browseterm\" already exists")
+        return _FakeCompleted(0, "", "")
+
+    monkeypatch.setattr(cluster_manager, "subprocess", _FakeModule(run))
+    monkeypatch.setattr(cluster_manager, "_install_k3s", lambda: None)
+    monkeypatch.setattr(cluster_manager, "_install_gvisor", lambda: None)
+    monkeypatch.setattr(cluster_manager, "_fetch_and_merge_kubeconfig", lambda: None)
+    cluster_manager.create_cluster(4, 8.0)  # must not raise
+
+
+def test_create_cluster_reraises_other_launch_failures(monkeypatch):
+    """The "already exists" tolerance in _create_vm must not swallow a real launch failure (e.g.
+    out of disk space) - only that one specific, known-safe race."""
+
+    def run(cmd, **kwargs):
+        if cmd[:2] == ["multipass", "info"]:
+            return _FakeCompleted(1, "", "does not exist")
+        if cmd[:2] == ["multipass", "launch"]:
+            return _FakeCompleted(1, "", "launch failed: not enough disk space")
+        return _FakeCompleted(0, "", "")
+
+    monkeypatch.setattr(cluster_manager, "subprocess", _FakeModule(run))
+    with pytest.raises(ClusterError, match="not enough disk space"):
+        cluster_manager.create_cluster(4, 8.0)
+
+
 def test_create_cluster_reports_steps_in_order(monkeypatch):
     monkeypatch.setattr(cluster_manager, "_create_vm", lambda *a: None)
     monkeypatch.setattr(cluster_manager, "_install_k3s", lambda: None)
@@ -228,12 +266,22 @@ def test_fetch_and_merge_kubeconfig_renames_default_and_rewrites_server(monkeypa
     monkeypatch.setattr(cluster_manager, "KUBE_CONFIG_PATH", str(kubeconfig_path))
     monkeypatch.setattr(cluster_manager, "_vm_ip", lambda info: "10.0.0.5")
 
+    rewritten_holder = {}
+
     def run(cmd, **kwargs):
         if cmd[:2] == ["multipass", "info"]:
             return _FakeCompleted(0, _vm_info(ip="10.0.0.5"), "")
         if cmd[:3] == ["multipass", "exec", cluster_manager.VM_NAME]:
             return _FakeCompleted(0, raw, "")
         if cmd[:2] == ["kubectl", "config"] and "view" in cmd:
+            # The real assertion: read back the actual rewritten temp file this call was given
+            # via KUBECONFIG (not a canned stand-in), so a regex that silently fails to rename
+            # one of the three "name: default" lines (cluster/context/user) is caught here rather
+            # than passing on a mocked "merged-output" that was never really produced by the
+            # rewrite logic under test.
+            fetched_path = kwargs["env"]["KUBECONFIG"].split(":")[1]
+            with open(fetched_path) as f:
+                rewritten_holder["content"] = f.read()
             return _FakeCompleted(0, "merged-output", "")
         if cmd[:3] == ["kubectl", "config", "use-context"]:
             return _FakeCompleted(0, "", "")
@@ -244,6 +292,15 @@ def test_fetch_and_merge_kubeconfig_renames_default_and_rewrites_server(monkeypa
     monkeypatch.setattr(cluster_manager.subprocess, "run", run)
     cluster_manager._fetch_and_merge_kubeconfig()
     assert kubeconfig_path.read_text() == "merged-output"
+
+    rewritten = rewritten_holder["content"]
+    assert "https://10.0.0.5:6443" in rewritten
+    assert "default" not in rewritten
+    # users:' own list item writes "name:" as its first field right after "- " (`- name: default`)
+    # rather than as a later sibling key on its own indented line the way clusters:/contexts: do
+    # (`  name: default`) - this specifically exercises that shape, since a plain `^\s*name:`
+    # pattern silently fails to match a line starting with a literal "-".
+    assert "- name: browseterm" in rewritten
 
 
 def test_install_k3s_disables_traefik_and_servicelb(monkeypatch):

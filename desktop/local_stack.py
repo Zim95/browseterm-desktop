@@ -53,6 +53,7 @@ from desktop.config import (
     DOCKER_HUB_REPO_NAME,
     DOCKER_HUB_REPO_PASSWORD,
     LOCAL_STACK_REPOS_DIR,
+    NGROK_AUTHTOKEN,
 )
 
 NAMESPACE = "browseterm"
@@ -73,14 +74,26 @@ _REPO_DIRS = {
     "status_monitor": "browseterm_workload/status_monitor",
     "cert-manager": "browseterm_workload/cert-manager",
     "reaper": "browseterm_workload/reaper",
+    "tunnel_registrar": "browseterm_workload/tunnel_registrar",
 }
 _MINIO_MANIFEST_PATH = os.path.join(LOCAL_STACK_REPOS_DIR, "browseterm-monorepo", "02_cluster_infra", "minio.yaml")
 _GVISOR_RUNTIMECLASS_MANIFEST_PATH = os.path.join(
     LOCAL_STACK_REPOS_DIR, "browseterm-monorepo", "02_cluster_infra", "gvisor-runtimeclass.yaml"
 )
 
-_MAKE_TIMEOUT_SECONDS = 90.0
-_CRONJOB_TRIGGER_TIMEOUT_SECONDS = 120.0
+# Both cover a cold image pull, not just the deploy/apply call itself - cert-manager's own image
+# alone measured 257MB (~100s+ at a typical ~2.5MB/s home connection, before the pod even starts
+# running), and every `make prod_setup`/`dev_setup` target below can trigger the same for its own
+# component's image. 90s/120s were only ever enough for an already-cached pull; see
+# cluster_manager.py's _LAUNCH_TIMEOUT_SECONDS/native_k3s.py's _K3S_INSTALL_TIMEOUT_SECONDS for the
+# same class of fix, measured against this project's real network conditions rather than assumed.
+_MAKE_TIMEOUT_SECONDS = 300.0
+_CRONJOB_TRIGGER_TIMEOUT_SECONDS = 300.0
+# Shared by every component here that depends on grpcio (device-agent, tunnel_registrar) - see
+# _build_device_agent_image's own docstring: a real `docker build` compiling Python C extensions
+# from source, not a manifest apply; 2700s (45 min) leaves headroom above the ~32 minutes measured
+# for real, since a killed RUN layer has to redo the whole compile on retry.
+_GRPCIO_IMAGE_BUILD_TIMEOUT_SECONDS = 2700.0
 
 
 class LocalStackError(ClusterError):
@@ -111,11 +124,11 @@ def _write_env_mk(repo_name: str, values: dict[str, str]) -> None:
         f.write(content)
 
 
-def _make(repo_name: str, target: str, **variables: str) -> None:
+def _make(repo_name: str, target: str, timeout: float = _MAKE_TIMEOUT_SECONDS, **variables: str) -> None:
     repo_path = _repo_path(repo_name)
     _ensure_env_mk_exists(repo_path)
     cmd = ["make", target] + [f"{key}={value}" for key, value in variables.items()]
-    _run(cmd, timeout=_MAKE_TIMEOUT_SECONDS, cwd=repo_path)
+    _run(cmd, timeout=timeout, cwd=repo_path)
 
 
 def _run_script(repo_name: str, relative_script: str, *args: str, timeout: float = _MAKE_TIMEOUT_SECONDS) -> None:
@@ -180,6 +193,60 @@ def _ensure_device_credential_secret(device_id: str, device_token: str) -> None:
         "kubectl", "--context", KUBE_CONTEXT, "-n", NAMESPACE, "create", "secret", "generic",
         "browseterm-device-credential",
         f"--from-literal=device_id={device_id}", f"--from-literal=token={device_token}",
+    ])
+    _ensure_tunnel_registrar_device_id_secret(device_id)
+
+
+def _ensure_tunnel_registrar_device_id_secret(device_id: str) -> None:
+    """socket-ssh/infra/deployment/deployment.yaml's tunnel-registrar container reads DEVICE_ID
+    from a *differently-named* Secret than the one just above - `device-credentials` (plural, no
+    prefix) with key `DEVICE_ID` (uppercase), not `browseterm-device-credential`'s `device_id`
+    (lowercase). Not a typo to reconcile away: that manifest's own comment documents DEVICE_ID as
+    "only a non-credential identifier for logging" (unlike `token`, which never appears here) -
+    this is a real, separate secret by design, just one nothing ever created. Caught for real via
+    `CreateContainerConfigError: secret "device-credentials" not found` on a live tunnel-registrar
+    container, after browseterm-device-credential had already been created successfully alongside
+    it - the two names are easy to conflate at a glance, which is exactly how this gap survived."""
+    _create_or_update([
+        "kubectl", "--context", KUBE_CONTEXT, "-n", NAMESPACE, "create", "secret", "generic",
+        "device-credentials", f"--from-literal=DEVICE_ID={device_id}",
+    ])
+
+
+def _ensure_container_maker_repo_credentials_secret() -> None:
+    """container-maker/infra/k8s/deployment/deployment.yaml's REPO_NAME/REPO_PASSWORD env vars
+    read this Secret (its own manifest comment, right above the secretKeyRefs, documents the exact
+    `kubectl create secret generic container-maker-repo-credentials --from-literal=REPO_NAME=...
+    --from-literal=REPO_PASSWORD=...` command expected to have created it) - container-maker's own
+    setup script (_deploy_container_maker, via k8s-development-setup.sh) only ever forwards
+    REPO_PASSWORD as a plain env var/build arg, it never creates this Secret. Same real gap as
+    _ensure_ngrok_credentials_secret: `kubectl apply` on the Deployment succeeds regardless, but
+    the container-maker Pod itself can never start (CreateContainerConfigError, referencing a
+    Secret that doesn't exist) - caught for real via `kubectl describe pod` during this project's
+    own Setup verification. Uses the same DOCKER_HUB_REPO_NAME/DOCKER_HUB_REPO_PASSWORD values
+    already passed to container-maker's own setup script positionally, just also placed where its
+    Pod spec actually reads them from."""
+    _create_or_update([
+        "kubectl", "--context", KUBE_CONTEXT, "-n", NAMESPACE, "create", "secret", "generic",
+        "container-maker-repo-credentials",
+        f"--from-literal=REPO_NAME={DOCKER_HUB_REPO_NAME}", f"--from-literal=REPO_PASSWORD={DOCKER_HUB_REPO_PASSWORD}",
+    ])
+
+
+def _ensure_ngrok_credentials_secret() -> None:
+    """socket-ssh/infra/deployment/deployment.yaml's `ngrok-agent` sidecar reads NGROK_AUTHTOKEN
+    from this Secret (name/key both must match exactly - see that manifest's own env block).
+    Nothing created this Secret anywhere before this function existed - a real gap: `kubectl
+    apply` on the Deployment succeeded regardless, but the ngrok-agent container itself could
+    never actually start (CreateContainerConfigError, referencing a Secret that plain didn't
+    exist), so remote tunnel access was silently broken independent of anything else in Setup.
+    Always created, even with an empty token (see config.NGROK_AUTHTOKEN's own docstring for why
+    this is soft/optional, unlike the internal API token) - a Secret that exists with an empty
+    value lets the pod start and fail on ngrok's own auth error, a far clearer signal than a
+    missing-Secret scheduling failure."""
+    _create_or_update([
+        "kubectl", "--context", KUBE_CONTEXT, "-n", NAMESPACE, "create", "secret", "generic",
+        "ngrok-credentials", f"--from-literal=NGROK_AUTHTOKEN={NGROK_AUTHTOKEN}",
     ])
 
 
@@ -262,12 +329,60 @@ def _deploy_container_maker(cloud_ingress_host_ip: str) -> None:
 def _build_device_agent_image() -> None:
     """browseterm-device-agent had no build/deploy tooling at all before this phase (its manifest's
     image field was a literal TODO placeholder) - build+push follows the exact same convention
-    every other local-stack component already uses (see scripts/deployment/build.sh)."""
-    _make("browseterm-device-agent", "prod_build", USER_NAME=DOCKER_HUB_REPO_NAME, REPO_NAME=DOCKER_HUB_REPO_NAME)
+    every other local-stack component already uses (see scripts/deployment/build.sh).
+
+    Gets its own, much longer timeout rather than the shared _MAKE_TIMEOUT_SECONDS every other
+    `make` target here uses: this is the one call in this module that's an actual `docker build`,
+    not a manifest apply - measured for real on this project's own hardware, `poetry install`
+    compiling grpcio/grpcio-tools from source (no prebuilt wheel matched) alone took ~32 minutes
+    under normal host contention (Multipass VM + Docker Desktop's own VM backend competing for the
+    same cores). _MAKE_TIMEOUT_SECONDS's 300s killed that build at the "exporting to image" stage,
+    seconds from finishing, and losing a killed RUN layer's build cache makes a retry redo the
+    entire slow compile from scratch - so this needs real headroom, not just a bigger multiple of
+    the deploy-only budget."""
+    _make(
+        "browseterm-device-agent", "prod_build", timeout=_GRPCIO_IMAGE_BUILD_TIMEOUT_SECONDS,
+        USER_NAME=DOCKER_HUB_REPO_NAME, REPO_NAME=DOCKER_HUB_REPO_NAME,
+    )
+
+
+def _restart_deployment(name: str) -> None:
+    """Forces already-running pods to actually pick up a freshly-pushed `:latest` image -
+    `kubectl apply` alone never does this for a Deployment whose manifest text didn't change (the
+    image field is a static ":latest" string, so re-applying the same YAML after a rebuild+push is
+    a no-op diff to `kubectl apply`, not something it treats as "redeploy this"). Caught for real:
+    a device-agent pod kept crash-looping on a stale image digest across multiple Setup runs that
+    each successfully rebuilt and pushed a real fix, because nothing ever told Kubernetes to
+    actually cycle it - confirmed via `kubectl get pod ... -o jsonpath={.status.
+    containerStatuses[0].imageID}` not matching the digest a fresh `docker pull` of the same tag
+    resolved to. A rollout restart bumps the Deployment's own restart annotation, which is what
+    actually makes kubelet re-pull an `imagePullPolicy: Always` image on the new pod generation."""
+    _run(["kubectl", "--context", KUBE_CONTEXT, "-n", NAMESPACE, "rollout", "restart", f"deployment/{name}"])
 
 
 def _deploy_device_agent() -> None:
     _make("browseterm-device-agent", "prod_setup", NAMESPACE=NAMESPACE, REPO_NAME=DOCKER_HUB_REPO_NAME)
+    _restart_deployment("browseterm-device-agent")
+
+
+def _build_tunnel_registrar_image() -> None:
+    """browseterm_workload/tunnel_registrar (the sidecar bundled inside socket-ssh's own
+    ngrok-agent Deployment - see that manifest's own comments) had no build/deploy tooling at all
+    before this phase either, same gap _build_device_agent_image's own docstring describes for
+    device-agent, and caught the same way: `zim95/tunnel-registrar` simply didn't exist on Docker
+    Hub at all (not a 404 on a missing tag - "object not found" on the repository itself), so the
+    ngrok-agent Pod's tunnel-registrar container could never leave ImagePullBackOff regardless of
+    anything else in Setup succeeding. `_deploy_socket_ssh` already applies the manifest that
+    references this image (same file, same repo) - this only needed the image to actually exist,
+    built before that apply runs.
+
+    Same generous, dedicated timeout as _build_device_agent_image and for the identical reason:
+    tunnel_registrar depends on grpcio too (pyproject.toml), so its `poetry install` risks the same
+    from-source compile under host contention that _MAKE_TIMEOUT_SECONDS was never sized for."""
+    _make(
+        "tunnel_registrar", "prod_build", timeout=_GRPCIO_IMAGE_BUILD_TIMEOUT_SECONDS,
+        USER_NAME=DOCKER_HUB_REPO_NAME, REPO_NAME=DOCKER_HUB_REPO_NAME,
+    )
 
 
 def _deploy_socket_ssh() -> None:
@@ -282,6 +397,11 @@ def _deploy_socket_ssh() -> None:
         DEVICE_AGENT_LOCAL_API_URL=DEVICE_AGENT_LOCAL_API_URL,
         ALLOWED_ORIGINS_PROD="https://app.browseterm.puhtaeto.com",
     )
+    # ngrok-agent (this same manifest) carries the tunnel-registrar sidecar - see
+    # _restart_deployment's own docstring for why a rebuilt image needs this to actually take
+    # effect. socket-ssh's own container image isn't rebuilt by this module, but restarting the
+    # whole Deployment is still correct (and cheap) since both containers share one Pod anyway.
+    _restart_deployment("ngrok-agent")
 
 
 def _deploy_status_monitor(device_id: str, cloud_ingress_host_ip: str) -> None:
@@ -333,6 +453,8 @@ def deploy(
         _ensure_namespace(),
         _ensure_internal_api_token_secret(),
         _ensure_device_credential_secret(device_id or "", device_token or ""),
+        _ensure_container_maker_repo_credentials_secret(),
+        _ensure_ngrok_credentials_secret(),
     ))
     _run_step(on_step, "Applying gVisor RuntimeClass", _deploy_gvisor_runtimeclass)
     _run_step(on_step, "Deploying MinIO", _deploy_minio)
@@ -343,4 +465,5 @@ def deploy(
     _run_step(on_step, "Deploying Device Agent", _deploy_device_agent)
     _run_step(on_step, "Deploying status-monitor", lambda: _deploy_status_monitor(device_id or "", cloud_ingress_host_ip))
     _run_step(on_step, "Deploying reaper", lambda: _deploy_reaper(device_id or "", cloud_ingress_host_ip))
+    _run_step(on_step, "Building tunnel-registrar image", _build_tunnel_registrar_image)
     _run_step(on_step, "Deploying Socket-SSH", _deploy_socket_ssh)
