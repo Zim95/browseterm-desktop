@@ -94,6 +94,10 @@ _CRONJOB_TRIGGER_TIMEOUT_SECONDS = 300.0
 # from source, not a manifest apply; 2700s (45 min) leaves headroom above the ~32 minutes measured
 # for real, since a killed RUN layer has to redo the whole compile on retry.
 _GRPCIO_IMAGE_BUILD_TIMEOUT_SECONDS = 2700.0
+# socket-ssh is a plain Node.js `npm install` (no C-extension compile like grpcio) - much faster
+# than _GRPCIO_IMAGE_BUILD_TIMEOUT_SECONDS, but still generous above _MAKE_TIMEOUT_SECONDS for the
+# same slow-connection reasoning as everything else in this module.
+_NODE_IMAGE_BUILD_TIMEOUT_SECONDS = 900.0
 
 
 class LocalStackError(ClusterError):
@@ -385,6 +389,18 @@ def _build_tunnel_registrar_image() -> None:
     )
 
 
+def _build_socket_ssh_image() -> None:
+    """socket-ssh had the exact same gap _build_device_agent_image's docstring describes: nothing
+    in this module ever rebuilt its image, so `_deploy_socket_ssh`'s `kubectl apply` alone left a
+    long-since-stale `:latest` running indefinitely - caught for real (2026-09-25) when a
+    Setup-deployed socket-ssh pod turned out to still be running pre-Part-13 code (direct `ioredis`
+    ticket lookups against a Redis that no longer exists anywhere in this stack), which made every
+    SSH connection over the ngrok tunnel fail even though the tunnel itself was healthy. Uses
+    build.sh's own hardcoded `socket-ssh:latest` tag/`./infra/deployment/Dockerfile` - no
+    variables to pass, unlike device-agent/tunnel_registrar's grpcio builds."""
+    _make("socket-ssh", "prod_build", timeout=_NODE_IMAGE_BUILD_TIMEOUT_SECONDS, USER_NAME=DOCKER_HUB_REPO_NAME, REPO_NAME=DOCKER_HUB_REPO_NAME)
+
+
 def _deploy_socket_ssh() -> None:
     """Migration Part 13: socket-ssh no longer calls Cloud directly at all - it consumes terminal
     tickets via a gRPC call to Device Agent's local API instead, so it needs no Cloud-facing
@@ -399,9 +415,10 @@ def _deploy_socket_ssh() -> None:
     )
     # ngrok-agent (this same manifest) carries the tunnel-registrar sidecar - see
     # _restart_deployment's own docstring for why a rebuilt image needs this to actually take
-    # effect. socket-ssh's own container image isn't rebuilt by this module, but restarting the
-    # whole Deployment is still correct (and cheap) since both containers share one Pod anyway.
+    # effect. socket-ssh itself is now also rebuilt by _build_socket_ssh_image above, so it needs
+    # the same restart to actually pick up a freshly-pushed image.
     _restart_deployment("ngrok-agent")
+    _restart_deployment("socket-ssh")
 
 
 def _deploy_status_monitor(device_id: str, cloud_ingress_host_ip: str) -> None:
@@ -466,4 +483,5 @@ def deploy(
     _run_step(on_step, "Deploying status-monitor", lambda: _deploy_status_monitor(device_id or "", cloud_ingress_host_ip))
     _run_step(on_step, "Deploying reaper", lambda: _deploy_reaper(device_id or "", cloud_ingress_host_ip))
     _run_step(on_step, "Building tunnel-registrar image", _build_tunnel_registrar_image)
+    _run_step(on_step, "Building Socket-SSH image", _build_socket_ssh_image)
     _run_step(on_step, "Deploying Socket-SSH", _deploy_socket_ssh)

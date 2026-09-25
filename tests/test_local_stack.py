@@ -229,15 +229,29 @@ def test_deploy_socket_ssh_no_longer_passes_cloud_config(monkeypatch):
     assert "CLOUD_INGRESS_HOST_IP" not in kwargs
 
 
-def test_deploy_socket_ssh_restarts_ngrok_agent(monkeypatch):
-    """A rebuilt tunnel-registrar image only takes effect if something actually cycles the
-    ngrok-agent Deployment - `kubectl apply` alone is a no-op against an unchanged ":latest"
-    manifest string (see _restart_deployment's own docstring)."""
+def test_deploy_socket_ssh_restarts_ngrok_agent_and_socket_ssh(monkeypatch):
+    """A rebuilt tunnel-registrar/socket-ssh image only takes effect if something actually cycles
+    the Deployment - `kubectl apply` alone is a no-op against an unchanged ":latest" manifest
+    string (see _restart_deployment's own docstring). Caught for real (2026-09-25): socket-ssh's
+    own image was never rebuilt by this module at all, so this pod kept running pre-Part-13 code
+    (still hitting a Redis that no longer exists) - _build_socket_ssh_image fixes the rebuild gap,
+    and this must restart "socket-ssh" too, not just "ngrok-agent", or the fix never reaches the
+    running pod."""
     monkeypatch.setattr(local_stack, "_make", lambda *a, **kw: None)
     restarted = []
     monkeypatch.setattr(local_stack, "_restart_deployment", lambda name: restarted.append(name))
     local_stack._deploy_socket_ssh()
-    assert restarted == ["ngrok-agent"]
+    assert restarted == ["ngrok-agent", "socket-ssh"]
+
+
+def test_build_socket_ssh_image_calls_prod_build(monkeypatch):
+    calls = []
+    monkeypatch.setattr(local_stack, "_make", lambda *a, **kw: calls.append((a, kw)))
+    local_stack._build_socket_ssh_image()
+    (args, kwargs) = calls[0]
+    assert args[:2] == ("socket-ssh", "prod_build")
+    assert kwargs["USER_NAME"] == local_stack.DOCKER_HUB_REPO_NAME
+    assert kwargs["REPO_NAME"] == local_stack.DOCKER_HUB_REPO_NAME
 
 
 def test_deploy_device_agent_restarts_itself(monkeypatch):
