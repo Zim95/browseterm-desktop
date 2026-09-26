@@ -75,6 +75,7 @@ _REPO_DIRS = {
     "cert-manager": "browseterm_workload/cert-manager",
     "reaper": "browseterm_workload/reaper",
     "tunnel_registrar": "browseterm_workload/tunnel_registrar",
+    "snapshot_job": "browseterm_workload/snapshot_job",
 }
 _MINIO_MANIFEST_PATH = os.path.join(LOCAL_STACK_REPOS_DIR, "browseterm-monorepo", "02_cluster_infra", "minio.yaml")
 _GVISOR_RUNTIMECLASS_MANIFEST_PATH = os.path.join(
@@ -389,6 +390,29 @@ def _build_tunnel_registrar_image() -> None:
     )
 
 
+def _build_snapshot_job_image() -> None:
+    """browseterm_workload/snapshot_job (the one-off Job container-maker's job_manager.py spawns
+    per Save/Hibernate) is the one component this module's own docstring already flagged as a
+    "known gap": it has no standing Deployment, so nothing here ever built or pushed its image at
+    all. Caught for real (2026-09-25, first live Save attempt): `zim95/snapshot-job:latest` on
+    Docker Hub was last pushed 2026-08-22 - over a month stale, predating Part 17's report-via-
+    Cloud rewrite, Part 12's device_agent_client.py rewiring, and Part 19's registry-push fix, so
+    every save was silently running long-obsolete snapshot logic. Uses the same grpcio-dependent
+    timeout as device-agent/tunnel_registrar (pyproject.toml pulls in grpcio-tools too).
+
+    Unlike the other build steps, this alone doesn't guarantee the next save picks it up:
+    job_manager.py deliberately uses `imagePullPolicy: IfNotPresent` for this ~1.1GB image (its own
+    comment explains why - re-pulling it on every single save would be wasteful), so a node that
+    already cached the old `:latest` tag needs that stale image cleared by hand (`multipass exec
+    browseterm -- sudo k3s crictl rmi <old-image-id>`) after a rebuild - not automated here, since
+    doing it unconditionally on every Setup run would defeat the whole point of IfNotPresent for
+    the overwhelmingly common case for which nothing changed."""
+    _make(
+        "snapshot_job", "prod_build", timeout=_GRPCIO_IMAGE_BUILD_TIMEOUT_SECONDS,
+        USER_NAME=DOCKER_HUB_REPO_NAME, REPO_NAME=DOCKER_HUB_REPO_NAME,
+    )
+
+
 def _build_socket_ssh_image() -> None:
     """socket-ssh had the exact same gap _build_device_agent_image's docstring describes: nothing
     in this module ever rebuilt its image, so `_deploy_socket_ssh`'s `kubectl apply` alone left a
@@ -460,9 +484,9 @@ def deploy(
     Ready) - deployed after Device Agent regardless, for readability of the sequence, not because
     it's strictly required.
 
-    snapshot_job is deliberately not deployed here: it has no standing Deployment/manifest of its
-    own (container-maker spawns it as a one-off Job per save, same as before this rewrite) - its
-    image still needs to exist for that to work, tracked as a known gap below.
+    snapshot_job has no standing Deployment/manifest here (container-maker spawns it as a one-off
+    Job per save, same as before this rewrite) - but its image is now built/pushed by this module
+    too (_build_snapshot_job_image), closing what used to be a known, undeployed gap.
     """
     check_prerequisites()
     _run_step(on_step, "Applying namespace and secrets", lambda: (
@@ -483,5 +507,6 @@ def deploy(
     _run_step(on_step, "Deploying status-monitor", lambda: _deploy_status_monitor(device_id or "", cloud_ingress_host_ip))
     _run_step(on_step, "Deploying reaper", lambda: _deploy_reaper(device_id or "", cloud_ingress_host_ip))
     _run_step(on_step, "Building tunnel-registrar image", _build_tunnel_registrar_image)
+    _run_step(on_step, "Building snapshot-job image", _build_snapshot_job_image)
     _run_step(on_step, "Building Socket-SSH image", _build_socket_ssh_image)
     _run_step(on_step, "Deploying Socket-SSH", _deploy_socket_ssh)

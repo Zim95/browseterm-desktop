@@ -67,6 +67,19 @@ def test_build_tunnel_registrar_image_calls_prod_build(monkeypatch):
     assert call[1] == "prod_build"
 
 
+def test_build_snapshot_job_image_calls_prod_build(monkeypatch):
+    """snapshot_job (the one-off Job container-maker spawns per Save/Hibernate) was the one
+    component this module's own docstring flagged as a known, never-built gap - caught for real
+    when a live Save ran a snapshot-job image over a month stale, predating three migration parts'
+    worth of rewrites to it."""
+    calls = []
+    monkeypatch.setattr(local_stack, "_make", lambda repo, target, **kw: calls.append((repo, target, kw)))
+    local_stack._build_snapshot_job_image()
+    (call,) = calls
+    assert call[0] == "snapshot_job"
+    assert call[1] == "prod_build"
+
+
 def test_ensure_container_maker_repo_credentials_secret_uses_correct_key_names(monkeypatch):
     """Keys must be literally `REPO_NAME`/`REPO_PASSWORD` - container-maker's own manifest
     (infra/k8s/deployment/deployment.yaml) reads this Secret via secretKeyRef with those exact
