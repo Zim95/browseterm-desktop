@@ -54,15 +54,18 @@ The Setup button additionally needs `BROWSETERM_CLOUD_INTERNAL_API_TOKEN` (byte-
 Cloud's own `CLOUD_INTERNAL_API_TOKEN`) - container-maker, status_monitor, reaper, and snapshot_job
 all still call Cloud directly with this one shared credential for a few things that don't have a
 Device Agent RPC equivalent yet (a documented, out-of-scope gap - see
-`BROWSETERM_MIGRATION_PROGRESS.md`'s Part 12 section). This is **not** something you export by hand
-before every launch: `desktop/config.py` reads it from `~/.browseterm/cloud_internal_api_token`
-(0600, outside any git repo -- this app never writes this file itself, it's set up once by hand,
-the same way Cloud's own `env.mk` secrets are), falling back to the
-`BROWSETERM_CLOUD_INTERNAL_API_TOKEN` env var only if you want to override it for one run. If
-Cloud's own token is ever regenerated, update that file to match -- until then,
-`local_stack.check_prerequisites()` still refuses to deploy anything at all (fails in milliseconds,
-not after a multi-minute VM-create + k3s-install cycle) if the value it reads doesn't match
-Cloud's.
+`BROWSETERM_MIGRATION_PROGRESS.md`'s Part 12 section). This, along with every other secret this app
+needs (`DOCKER_HUB_REPO_PASSWORD`, `NGROK_AUTHTOKEN`), is **not** something you export by hand
+before every launch: `desktop/config.py` reads it from this repo's own gitignored `env.mk` at the
+repo root (copy `env.mk.example` to `env.mk` and fill in real values - same `KEY=value` convention
+every other Browseterm repo's own `env.mk` already uses), falling back to an env var of the same
+name only if you want to override a single value for one run. If Cloud's own token is ever
+regenerated, update `env.mk` to match -- until then, `local_stack.check_prerequisites()` still
+refuses to deploy anything at all (fails in milliseconds, not after a multi-minute VM-create +
+k3s-install cycle) if the value it reads doesn't match Cloud's. `desktop/local_stack.py`'s Setup
+deploy step (`_ensure_container_maker_repo_credentials_secret`) injects `DOCKER_HUB_REPO_PASSWORD`
+into the cluster as a real Kubernetes Secret every run, so a from-scratch VM rebuild never silently
+redeploys with an empty credential the way a manually-patched, non-persisted value once did.
 
 Device Agent itself needs this specific device's own Bearer credential (not the shared internal
 token above) - `local_stack.deploy()` copies it from this app's own Keychain storage

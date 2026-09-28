@@ -45,42 +45,54 @@ STATE_FILE: str = os.path.join(STATE_DIR, "desktop_state.json")
 # to this project's own convention of cloning every repo flat under one directory (~/browseterm).
 LOCAL_STACK_REPOS_DIR: str = os.path.expanduser(os.getenv("LOCAL_STACK_REPOS_DIR", "~/browseterm"))
 
-# Must be byte-identical to Cloud's own CLOUD_INTERNAL_API_TOKEN (SETUP-LOCAL.md step 5) -- every
-# internal-token-gated Local-to-Cloud call (session validate, container CRUD, catalog, sse-tokens)
-# silently 401s otherwise. An env var still overrides (e.g. after Cloud's token is regenerated),
-# but the day-to-day value lives in this file instead of needing to be exported by hand before
-# every launch -- same `~/.browseterm` local-machine-config directory STATE_FILE already uses
-# (never inside a git repo, so there's no `.gitignore` to rely on getting right), same 0600
-# permissions convention. local_stack.check_prerequisites() still refuses to deploy anything at
-# all if this ends up empty either way, rather than standing up a stack that fails confusingly
-# later.
-CLOUD_INTERNAL_API_TOKEN_FILE: str = os.path.join(STATE_DIR, "cloud_internal_api_token")
+# This app's own secrets (Cloud's internal API token, the Docker Hub push/pull credential, the
+# ngrok authtoken) live in one gitignored `env.mk` at this repo's root - the same `KEY=value`-
+# per-line convention every other Browseterm repo's own env.mk already uses, rather than a
+# separate ad-hoc dotfile per secret. See env.mk.example for the full list of keys and what each
+# one gates. An env var still overrides any individual value for one run (e.g. CI, or testing a
+# rotated token) without touching the file.
+ENV_MK_PATH: str = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "env.mk")
 
 
-def _read_local_token_file(path: str) -> str:
+def _load_env_mk(path: str) -> dict[str, str]:
+    values: dict[str, str] = {}
     try:
         with open(path) as f:
-            return f.read().strip()
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                values[key.strip()] = value.strip()
     except FileNotFoundError:
-        return ""
+        pass
+    return values
 
 
+_ENV_MK: dict[str, str] = _load_env_mk(ENV_MK_PATH)
+
+# Must be byte-identical to Cloud's own CLOUD_INTERNAL_API_TOKEN (SETUP-LOCAL.md step 5) -- every
+# internal-token-gated Local-to-Cloud call (session validate, container CRUD, catalog, sse-tokens)
+# silently 401s otherwise. local_stack.check_prerequisites() still refuses to deploy anything at
+# all if this ends up empty, rather than standing up a stack that fails confusingly later.
 BROWSETERM_CLOUD_INTERNAL_API_TOKEN: str = (
-    os.getenv("BROWSETERM_CLOUD_INTERNAL_API_TOKEN") or _read_local_token_file(CLOUD_INTERNAL_API_TOKEN_FILE)
+    os.getenv("BROWSETERM_CLOUD_INTERNAL_API_TOKEN") or _ENV_MK.get("BROWSETERM_CLOUD_INTERNAL_API_TOKEN", "")
 )
 
 # Docker Hub account the local-stack images are pulled from (docker.io/<name>/<component>:latest).
-# REPO_PASSWORD is only ever used by container-maker for `docker login` during a save/snapshot
-# build+push -- left blank by default (matching this project's own established local-dev default),
-# meaning the terminal itself works fine but Save will fail until a real value is supplied.
-DOCKER_HUB_REPO_NAME: str = os.getenv("DOCKER_HUB_REPO_NAME", "zim95")
-DOCKER_HUB_REPO_PASSWORD: str = os.getenv("DOCKER_HUB_REPO_PASSWORD", "")
+# REPO_PASSWORD is used by container-maker both for `docker login` during a save/snapshot
+# build+push AND to build the per-user-namespace image-pull secret every CREATE/RESUME needs to
+# pull a private saved snapshot (see container-maker's NamespaceManager._apply_image_pull_secret) --
+# so a from-scratch Setup (e.g. after deleting and recreating the Multipass VM) doesn't silently
+# recreate that Secret with an empty password again. Left blank if env.mk was never filled in: the
+# terminal itself works fine but Save, and Resuming/Creating anything from a saved snapshot, will
+# fail until a real value is supplied.
+DOCKER_HUB_REPO_NAME: str = os.getenv("DOCKER_HUB_REPO_NAME") or _ENV_MK.get("DOCKER_HUB_REPO_NAME", "zim95")
+DOCKER_HUB_REPO_PASSWORD: str = os.getenv("DOCKER_HUB_REPO_PASSWORD") or _ENV_MK.get("DOCKER_HUB_REPO_PASSWORD", "")
 
 # socket-ssh's `ngrok-agent` sidecar (infra/deployment/deployment.yaml) reads NGROK_AUTHTOKEN from
-# a `ngrok-credentials` Secret local_stack.py creates from this value - same file-or-env-var,
-# 0600-in-~/.browseterm convention as CLOUD_INTERNAL_API_TOKEN_FILE above. Left blank by default:
-# the rest of the local stack (terminal creation, container-maker, etc.) works fine without it, but
-# socket-ssh's ngrok-agent container can't start without a real token (CreateContainerConfigError),
-# so remote tunnel access specifically won't work until one is supplied.
-NGROK_AUTHTOKEN_FILE: str = os.path.join(STATE_DIR, "ngrok_authtoken")
-NGROK_AUTHTOKEN: str = os.getenv("NGROK_AUTHTOKEN") or _read_local_token_file(NGROK_AUTHTOKEN_FILE)
+# a `ngrok-credentials` Secret local_stack.py creates from this value. Left blank if env.mk was
+# never filled in: the rest of the local stack (terminal creation, container-maker, etc.) works
+# fine without it, but socket-ssh's ngrok-agent container can't start without a real token
+# (CreateContainerConfigError), so remote tunnel access specifically won't work until one is set.
+NGROK_AUTHTOKEN: str = os.getenv("NGROK_AUTHTOKEN") or _ENV_MK.get("NGROK_AUTHTOKEN", "")

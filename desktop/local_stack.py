@@ -49,7 +49,7 @@ from desktop.cluster_manager import KUBE_CONTEXT, ClusterError, StepCallback, _n
 from desktop.config import (
     BROWSETERM_CLOUD_API_URL,
     BROWSETERM_CLOUD_INTERNAL_API_TOKEN,
-    CLOUD_INTERNAL_API_TOKEN_FILE,
+    ENV_MK_PATH,
     DOCKER_HUB_REPO_NAME,
     DOCKER_HUB_REPO_PASSWORD,
     LOCAL_STACK_REPOS_DIR,
@@ -164,9 +164,9 @@ def check_prerequisites() -> None:
     if not BROWSETERM_CLOUD_INTERNAL_API_TOKEN:
         raise LocalStackError(
             "BROWSETERM_CLOUD_INTERNAL_API_TOKEN is not set. It must be the exact same value as "
-            f"Cloud's own CLOUD_INTERNAL_API_TOKEN -- put it in {CLOUD_INTERNAL_API_TOKEN_FILE} "
-            "(see desktop/config.py), or set it as an environment variable to override that for "
-            "one run."
+            f"Cloud's own CLOUD_INTERNAL_API_TOKEN -- put it in {ENV_MK_PATH} "
+            "(see desktop/config.py and env.mk.example), or set it as an environment variable to "
+            "override that for one run."
         )
 
 
