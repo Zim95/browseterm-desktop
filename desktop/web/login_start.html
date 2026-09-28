@@ -13,6 +13,7 @@ body { margin: 0; height: 100vh; display: flex; align-items: center; justify-con
        background-color: #A8FBD3; font-family: Arial, sans-serif; }
 .container { text-align: center; background: white; padding: 2rem; border-radius: 8px;
              box-shadow: 0 2px 10px rgba(0,0,0,0.1); min-width: 300px; max-width: 400px; }
+.logo-icon { width: 56px; height: 56px; border-radius: 14px; margin-bottom: 0.75rem; }
 h1 { color: #333; margin: 0 0 0.5rem; font-size: 2.5rem; font-weight: bold; }
 p.subtitle { color: #666; font-size: 0.95rem; line-height: 1.5; margin: 0 0 1.5rem; }
 .login-buttons { display: flex; flex-direction: column; gap: 1rem; }
@@ -38,6 +39,17 @@ p.subtitle { color: #666; font-size: 0.95rem; line-height: 1.5; margin: 0 0 1.5r
 </head>
 <body>
 <div class="container">
+<svg class="logo-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" role="img" aria-labelledby="logoTitle logoDesc">
+  <title id="logoTitle">Browseterm icon</title>
+  <desc id="logoDesc">A mint terminal prompt reading greater-than b t underscore on a rounded dark green square.</desc>
+  <rect width="96" height="96" rx="24" fill="#152A22"/>
+  <g fill="none" stroke="#A8FBD3" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M13 34l11 14-11 14"/>
+    <path d="M34 28v36m0-18c3-4 7-6 11-6 7 0 12 5 12 12s-5 12-12 12c-4 0-8-2-11-6"/>
+    <path d="M68 34v23c0 5 3 8 8 8m-14-23h14"/>
+    <path d="M80 65h7"/>
+  </g>
+</svg>
 <h1>BrowseTerm</h1>
 <p class="subtitle">Log in to register this Mac and start creating workspaces.</p>
 <div class="login-buttons">

@@ -15,6 +15,7 @@ ipython = "8.1.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.0"
+pillow = "^12.3.0"
 
 [build-system]
 requires = ["poetry-core"]
