@@ -25,6 +25,7 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install poetry
+      - run: poetry config virtualenvs.create false
       - run: poetry install --no-interaction --no-root
       - name: Build .app
         run: |
@@ -53,6 +54,7 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install poetry
+      - run: poetry config virtualenvs.create false
       - run: poetry install --no-interaction --no-root
       - name: Build .exe
         run: >
@@ -81,6 +83,7 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install poetry
+      - run: poetry config virtualenvs.create false
       - run: poetry install --no-interaction --no-root
       - name: Build CLI binary
         run: poetry run pyinstaller --onefile --name browseterm-cli desktop/cli.py
