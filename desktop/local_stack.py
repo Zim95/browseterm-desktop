@@ -77,9 +77,13 @@ _REPO_DIRS = {
     "tunnel_registrar": "browseterm_workload/tunnel_registrar",
     "snapshot_job": "browseterm_workload/snapshot_job",
 }
-_MINIO_MANIFEST_PATH = os.path.join(LOCAL_STACK_REPOS_DIR, "browseterm-monorepo", "02_cluster_infra", "minio.yaml")
+# Moved out of browseterm-monorepo's own 02_cluster_infra/ into the shared, project-agnostic
+# puhtaeto_infra repo (a flat sibling checkout, same LOCAL_STACK_REPOS_DIR convention as every
+# other repo this module reads from) - see puhtaeto_infra's own README for why: cluster-level infra
+# that isn't specific to Browseterm belongs there, not duplicated per project.
+_MINIO_MANIFEST_PATH = os.path.join(LOCAL_STACK_REPOS_DIR, "puhtaeto_infra", "cluster", "manifests", "minio.yaml")
 _GVISOR_RUNTIMECLASS_MANIFEST_PATH = os.path.join(
-    LOCAL_STACK_REPOS_DIR, "browseterm-monorepo", "02_cluster_infra", "gvisor-runtimeclass.yaml"
+    LOCAL_STACK_REPOS_DIR, "puhtaeto_infra", "cluster", "manifests", "gvisor-runtimeclass.yaml"
 )
 
 # Both cover a cold image pull, not just the deploy/apply call itself - cert-manager's own image
