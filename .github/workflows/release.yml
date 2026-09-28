@@ -1,0 +1,105 @@
+name: Release
+
+# Builds real installers for all three platforms and (on a tag push) publishes them to a GitHub
+# Release. PyInstaller can't cross-compile - each platform's own artifact is built on that
+# platform's own GitHub-hosted runner, not on one machine pretending to target all three.
+#
+# macOS and the Linux CLI build were validated locally (a real .dmg launched and loaded live
+# cluster data; the Linux binary was built and run inside a disposable python:3.11-slim
+# container) before this workflow was written. The Windows job could not be validated the same
+# way - no Windows machine was available - so its first real run on windows-latest IS its first
+# real test; watch it closely and fix forward if pythonnet/pywebview's Windows renderer needs a
+# PyInstaller hook this doesn't already have.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch: {}
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install poetry
+      - run: poetry install --no-interaction --no-root
+      - name: Build .app
+        run: |
+          poetry run pyinstaller --windowed --onedir \
+            --name BrowseTerm \
+            --icon packaging/icons/logo.icns \
+            --add-data "desktop/web:desktop/web" \
+            --noconfirm \
+            main.py
+      - name: Package .dmg
+        run: |
+          mkdir -p dist-dmg
+          cp -R dist/BrowseTerm.app dist-dmg/
+          ln -s /Applications dist-dmg/Applications
+          hdiutil create -volname "BrowseTerm" -srcfolder dist-dmg -ov -format UDZO BrowseTerm-macOS.dmg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BrowseTerm-macOS
+          path: BrowseTerm-macOS.dmg
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install poetry
+      - run: poetry install --no-interaction --no-root
+      - name: Build .exe
+        run: >
+          poetry run pyinstaller --windowed --onefile
+          --name BrowseTerm
+          --icon packaging/icons/logo.ico
+          --add-data "desktop/web;desktop/web"
+          --noconfirm
+          main.py
+      - name: Install Inno Setup
+        run: choco install innosetup -y
+      - name: Build installer
+        env:
+          BROWSETERM_VERSION: ${{ github.ref_name }}
+        run: '& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" packaging\windows\installer.iss'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BrowseTerm-Windows
+          path: packaging/windows/Output/BrowseTerm-Setup.exe
+
+  build-linux-cli:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install poetry
+      - run: poetry install --no-interaction --no-root
+      - name: Build CLI binary
+        run: poetry run pyinstaller --onefile --name browseterm-cli desktop/cli.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: browseterm-cli-linux
+          path: dist/browseterm-cli
+
+  release:
+    needs: [build-macos, build-windows, build-linux-cli]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+      - name: Rename Linux binary for clarity
+        run: mv browseterm-cli-linux/browseterm-cli browseterm-cli-linux/browseterm-cli-linux
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            BrowseTerm-macOS/BrowseTerm-macOS.dmg
+            BrowseTerm-Windows/BrowseTerm-Setup.exe
+            browseterm-cli-linux/browseterm-cli-linux
