@@ -24,7 +24,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: pip install poetry
+      - run: pip install 'poetry==2.2.1'
       - run: poetry config virtualenvs.create false
       - run: poetry install --no-interaction --no-root
       - name: Build .app
@@ -53,7 +53,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: pip install poetry
+      - run: pip install 'poetry==2.2.1'
       - run: poetry config virtualenvs.create false
       - run: poetry install --no-interaction --no-root
       - name: Build .exe
@@ -82,9 +82,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: pip install poetry
+      - run: pip install 'poetry==2.2.1'
       - run: poetry config virtualenvs.create false
       - run: poetry install --no-interaction --no-root
+      # PyInstaller on Linux needs objdump (binutils) to build the executable - confirmed missing
+      # in a bare python:3.11-slim container during local validation; installed explicitly rather
+      # than assumed present on ubuntu-latest.
+      - run: sudo apt-get update -qq && sudo apt-get install -qq -y binutils
       - name: Build CLI binary
         run: poetry run pyinstaller --onefile --name browseterm-cli desktop/cli.py
       - uses: actions/upload-artifact@v4
