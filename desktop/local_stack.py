@@ -81,9 +81,9 @@ _REPO_DIRS = {
 # puhtaeto_infra repo (a flat sibling checkout, same LOCAL_STACK_REPOS_DIR convention as every
 # other repo this module reads from) - see puhtaeto_infra's own README for why: cluster-level infra
 # that isn't specific to Browseterm belongs there, not duplicated per project.
-_MINIO_MANIFEST_PATH = os.path.join(LOCAL_STACK_REPOS_DIR, "puhtaeto_infra", "cluster", "manifests", "minio.yaml")
+_MINIO_MANIFEST_PATH = os.path.join(LOCAL_STACK_REPOS_DIR, "puhtaeto_infra", "cluster", "k3s", "minio.yaml")
 _GVISOR_RUNTIMECLASS_MANIFEST_PATH = os.path.join(
-    LOCAL_STACK_REPOS_DIR, "puhtaeto_infra", "cluster", "manifests", "gvisor-runtimeclass.yaml"
+    LOCAL_STACK_REPOS_DIR, "puhtaeto_infra", "cluster", "k3s", "gvisor-runtimeclass.yaml"
 )
 
 # Both cover a cold image pull, not just the deploy/apply call itself - cert-manager's own image
