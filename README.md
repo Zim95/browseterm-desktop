@@ -154,8 +154,8 @@ token on startup skips the login page entirely and goes straight to the Device p
   Keychain token (marks it ACTIVE, demotes any other of this user's active devices) - it does
   **not** re-run bootstrap, since that needs a live WebView session this shell no longer has once
   swapped away from it. If the token is genuinely missing (e.g. after logout), the answer is "log
-  out and log back in", not a hidden second bootstrap path here (p07.md: "do not unnecessarily
-  expand P07 into device-management UI").
+  out and log back in", not a hidden second bootstrap path here (deliberately not expanding
+  device bootstrap into a full device-management UI).
 - **Heartbeat**: owned by the daemon now, not the GUI app - see "Daemon" below. The GUI still only
   ever checks Keychain for a valid token to decide "am I logged in"; it doesn't keep that token's
   device fresh itself any more.
@@ -228,8 +228,8 @@ poetry run pytest tests/ -v
 provider threading through to both calls) plus the still-existing `redeem_device_bootstrap`
 Cloud-client function against a tiny in-process HTTP stub (bootstrap end-to-end, missing-cookie/
 wrong-CSRF rejection, second-redemption-of-a-code failing, device-token-scoped calls), the
-Keychain storage abstraction being swappable (a `_FakeKeychain` stands in, matching p07.md section
-22's "use an abstraction so unit tests can mock storage"), and `Api.activate_device()`'s friendly
+Keychain storage abstraction being swappable (a `_FakeKeychain` stands in, so unit tests can mock
+storage), and `Api.activate_device()`'s friendly
 error when no credential exists yet. `tests/test_cluster_manager.py`/`tests/test_api_cluster.py`/
 `tests/test_local_stack.py` cover the Cluster section separately (including the live-progress
 `on_setup_step` wiring), and `tests/test_daemon.py` covers the daemon's heartbeat/health-check
