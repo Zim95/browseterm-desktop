@@ -54,7 +54,6 @@ def _fake_local_stack(monkeypatch):
     """local_stack.deploy() shells out to `make`/`kubectl`/`docker` across several sibling repos --
     every test in this file except the ones dedicated to this wiring itself treats it as a no-op,
     the same way cluster_manager's own real k3d/docker/kubectl calls are mocked per-test below."""
-    monkeypatch.setattr(api_module.local_stack, "check_prerequisites", lambda: None)
     monkeypatch.setattr(api_module.local_stack, "deploy", lambda device_id, device_token=None, on_step=None: None)
 
 
@@ -186,18 +185,6 @@ def test_setup_cluster_deploys_local_stack_with_device_id_after_cluster_creation
     assert calls == [("create_cluster", 2, 4), ("deploy", "device-1")]
 
 
-def test_setup_cluster_checks_local_stack_prerequisites_before_creating_cluster(monkeypatch):
-    def raise_error():
-        raise LocalStackError("BROWSETERM_CLOUD_INTERNAL_API_TOKEN is not set.")
-    monkeypatch.setattr(api_module.local_stack, "check_prerequisites", raise_error)
-    create_calls = []
-    monkeypatch.setattr(api_module.cluster_manager, "create_cluster", lambda cpu, mem, storage=None, on_step=None: create_calls.append(True))
-    monkeypatch.setattr(api_module.cluster_manager, "cluster_exists", lambda: False)
-
-    status = _make_api().setup_cluster(cpu=2, memory_gb=4, storage_gb=50)
-
-    assert create_calls == []  # never even tried to create the cluster
-    assert "BROWSETERM_CLOUD_INTERNAL_API_TOKEN" in status["error"]
 
 
 def test_setup_cluster_surfaces_local_stack_deploy_failure(monkeypatch):

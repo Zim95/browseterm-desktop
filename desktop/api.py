@@ -127,10 +127,6 @@ class Api:
         on_step = on_step or self._on_setup_step
         self._save_allocation(cpu, memory_gb, storage_gb)
         try:
-            # Checked before the VM is even created: a doomed config (missing internal API token)
-            # fails in milliseconds, not after a multi-minute VM-create + k3s-install cycle only
-            # to fail deploying the actual workloads onto it.
-            local_stack.check_prerequisites()
             cluster_manager.create_cluster(cpu, memory_gb, storage_gb, on_step=on_step)
             local_stack.deploy(self._state.device_id, self._keychain.get_device_token(), on_step=on_step)
         except ClusterError as e:

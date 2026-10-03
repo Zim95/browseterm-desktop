@@ -15,16 +15,6 @@ def _token(monkeypatch):
     monkeypatch.setattr(local_stack, "BROWSETERM_CLOUD_INTERNAL_API_TOKEN", "test-token")
 
 
-def test_check_prerequisites_raises_when_token_missing(monkeypatch):
-    monkeypatch.setattr(local_stack, "BROWSETERM_CLOUD_INTERNAL_API_TOKEN", "")
-    with pytest.raises(LocalStackError, match="BROWSETERM_CLOUD_INTERNAL_API_TOKEN"):
-        local_stack.check_prerequisites()
-
-
-def test_check_prerequisites_passes_when_token_set():
-    local_stack.check_prerequisites()  # must not raise, token set by the autouse fixture
-
-
 def test_ensure_device_credential_secret_requires_real_values():
     with pytest.raises(LocalStackError, match="device_id/device_token"):
         local_stack._ensure_device_credential_secret("", "")
@@ -108,11 +98,26 @@ def test_ensure_ngrok_credentials_secret_uses_correct_key_name(monkeypatch):
 
 
 def test_ensure_ngrok_credentials_secret_does_not_raise_when_token_empty(monkeypatch):
-    """Unlike the internal API token, a missing NGROK_AUTHTOKEN is soft - the rest of the stack
-    must still deploy; only the ngrok-agent container itself fails to authenticate at runtime."""
+    """A missing NGROK_AUTHTOKEN is soft - the rest of the stack must still deploy; only the
+    ngrok-agent container itself fails to authenticate at runtime."""
     monkeypatch.setattr(local_stack, "NGROK_AUTHTOKEN", "")
     monkeypatch.setattr(local_stack, "_create_or_update", lambda cmd: None)
     local_stack._ensure_ngrok_credentials_secret()  # must not raise
+
+
+def test_ensure_internal_api_token_secret_does_not_raise_when_token_empty(monkeypatch):
+    """Finishing Part 12 removed every local-stack component's own hard requirement on this
+    being set and byte-identical to Cloud's real value - the Secret is still created (so
+    container-maker's own envFrom can start at all), but an empty value is a soft failure now,
+    same convention as NGROK_AUTHTOKEN above: only container-maker's save_reconciler.py sweep
+    (not consumer-facing) gets a 401 until the operator supplies a real token."""
+    monkeypatch.setattr(local_stack, "BROWSETERM_CLOUD_INTERNAL_API_TOKEN", "")
+    calls = []
+    monkeypatch.setattr(local_stack, "_create_or_update", lambda cmd: calls.append(cmd))
+    local_stack._ensure_internal_api_token_secret()  # must not raise
+    (cmd,) = calls
+    assert "browseterm-internal-api-token" in cmd
+    assert "--from-literal=CLOUD_INTERNAL_API_TOKEN=" in cmd
 
 
 def test_resolve_cloud_ingress_host_ip_uses_real_dns(monkeypatch):

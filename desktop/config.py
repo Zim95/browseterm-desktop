@@ -71,10 +71,13 @@ def _load_env_mk(path: str) -> dict[str, str]:
 
 _ENV_MK: dict[str, str] = _load_env_mk(ENV_MK_PATH)
 
-# Must be byte-identical to Cloud's own CLOUD_INTERNAL_API_TOKEN (SETUP-LOCAL.md step 5) -- every
-# internal-token-gated Local-to-Cloud call (session validate, container CRUD, catalog, sse-tokens)
-# silently 401s otherwise. local_stack.check_prerequisites() still refuses to deploy anything at
-# all if this ends up empty, rather than standing up a stack that fails confusingly later.
+# Must be byte-identical to Cloud's own CLOUD_INTERNAL_API_TOKEN to be useful at all. Finishing
+# Part 12 removed every local-stack component's own hard dependency on this (the device-command
+# paths all authenticate as the device itself now) - the only remaining reader is
+# container-maker's own save_reconciler.py (a genuinely cluster-wide sweep that can't be scoped to
+# a per-device credential), so an empty value here is a soft failure (just that one sweep 401s)
+# rather than something Setup refuses to proceed without - see
+# local_stack._ensure_internal_api_token_secret's own docstring.
 BROWSETERM_CLOUD_INTERNAL_API_TOKEN: str = (
     os.getenv("BROWSETERM_CLOUD_INTERNAL_API_TOKEN") or _ENV_MK.get("BROWSETERM_CLOUD_INTERNAL_API_TOKEN", "")
 )

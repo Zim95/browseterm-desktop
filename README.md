@@ -50,22 +50,23 @@ already used (`_show_device_code`). `desktop/web/static/js/app.js`'s `window.onS
 one row per step, in the order they actually arrive (not a hardcoded list - it doesn't need to
 know the steps ahead of time), showing pending/in-progress/done/failed.
 
-The Setup button additionally needs `BROWSETERM_CLOUD_INTERNAL_API_TOKEN` (byte-identical to
-Cloud's own `CLOUD_INTERNAL_API_TOKEN`) - container-maker, status_monitor, reaper, and snapshot_job
-all still call Cloud directly with this one shared credential for a few things that don't have a
-Device Agent RPC equivalent yet (a documented, out-of-scope gap - see
-`BROWSETERM_MIGRATION_PROGRESS.md`'s Part 12 section). This, along with every other secret this app
-needs (`DOCKER_HUB_REPO_PASSWORD`, `NGROK_AUTHTOKEN`), is **not** something you export by hand
-before every launch: `desktop/config.py` reads it from this repo's own gitignored `env.mk` at the
-repo root (copy `env.mk.example` to `env.mk` and fill in real values - same `KEY=value` convention
-every other Browseterm repo's own `env.mk` already uses), falling back to an env var of the same
-name only if you want to override a single value for one run. If Cloud's own token is ever
-regenerated, update `env.mk` to match -- until then, `local_stack.check_prerequisites()` still
-refuses to deploy anything at all (fails in milliseconds, not after a multi-minute VM-create +
-k3s-install cycle) if the value it reads doesn't match Cloud's. `desktop/local_stack.py`'s Setup
-deploy step (`_ensure_container_maker_repo_credentials_secret`) injects `DOCKER_HUB_REPO_PASSWORD`
-into the cluster as a real Kubernetes Secret every run, so a from-scratch VM rebuild never silently
-redeploys with an empty credential the way a manually-patched, non-persisted value once did.
+The Setup button no longer hard-requires `BROWSETERM_CLOUD_INTERNAL_API_TOKEN` - finishing Part 12
+moved container-maker/status_monitor/reaper/snapshot_job's remaining direct, internal-token-
+credentialed Cloud calls onto Device Agent's own local API (each authenticating as the device
+itself instead), closing the gap `BROWSETERM_MIGRATION_PROGRESS.md`'s Part 12 section used to flag
+as out-of-scope. The only thing that still reads this token is container-maker's own
+`save_reconciler.py`, a genuinely cluster-wide "find every user's stuck saves" sweep that can't be
+scoped to a per-device credential - leaving it unset (or wrong) no longer blocks Setup at all, it
+just means that one sweep 401s on its own until an operator of Cloud itself supplies a real value.
+This, along with every other secret this app needs (`DOCKER_HUB_REPO_PASSWORD`, `NGROK_AUTHTOKEN`),
+is **not** something you export by hand before every launch: `desktop/config.py` reads it from this
+repo's own gitignored `env.mk` at the repo root (copy `env.mk.example` to `env.mk` and fill in real
+values - same `KEY=value` convention every other Browseterm repo's own `env.mk` already uses),
+falling back to an env var of the same name only if you want to override a single value for one
+run. `desktop/local_stack.py`'s Setup deploy step (`_ensure_container_maker_repo_credentials_secret`)
+injects `DOCKER_HUB_REPO_PASSWORD` into the cluster as a real Kubernetes Secret every run, so a
+from-scratch VM rebuild never silently redeploys with an empty credential the way a
+manually-patched, non-persisted value once did.
 
 Device Agent itself needs this specific device's own Bearer credential (not the shared internal
 token above) - `local_stack.deploy()` copies it from this app's own Keychain storage

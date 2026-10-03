@@ -49,7 +49,6 @@ from desktop.cluster_manager import KUBE_CONTEXT, ClusterError, StepCallback, _n
 from desktop.config import (
     BROWSETERM_CLOUD_API_URL,
     BROWSETERM_CLOUD_INTERNAL_API_TOKEN,
-    ENV_MK_PATH,
     DOCKER_HUB_REPO_NAME,
     DOCKER_HUB_REPO_PASSWORD,
     LOCAL_STACK_REPOS_DIR,
@@ -156,29 +155,23 @@ def _create_or_update(create_cmd: list[str]) -> None:
     _run(["kubectl", "--context", KUBE_CONTEXT, "apply", "-f", "-"], input_text=yaml_text)
 
 
-def check_prerequisites() -> None:
-    """Called before the VM is even created (desktop/api.py's setup_cluster) - fails fast on the
-    one thing this module cannot fix for the user: container-maker still calls Cloud directly with
-    the global CLOUD_INTERNAL_API_TOKEN for one remaining DB-row lookup (documented, out-of-scope
-    gap - see BROWSETERM_MIGRATION_PROGRESS.md's Part 12 section, "container-maker itself calls
-    Cloud directly with the global CLOUD_INTERNAL_API_TOKEN"), and status_monitor/reaper/
-    snapshot_job all still read the SAME shared Secret too (confirmed in their current manifests -
-    Part 12 deliberately left this one credential in place, it did not remove it). Must be
-    byte-identical to Cloud's own CLOUD_INTERNAL_API_TOKEN."""
-    if not BROWSETERM_CLOUD_INTERNAL_API_TOKEN:
-        raise LocalStackError(
-            "BROWSETERM_CLOUD_INTERNAL_API_TOKEN is not set. It must be the exact same value as "
-            f"Cloud's own CLOUD_INTERNAL_API_TOKEN -- put it in {ENV_MK_PATH} "
-            "(see desktop/config.py and env.mk.example), or set it as an environment variable to "
-            "override that for one run."
-        )
-
-
 def _ensure_namespace() -> None:
     _create_or_update(["kubectl", "--context", KUBE_CONTEXT, "create", "namespace", NAMESPACE])
 
 
 def _ensure_internal_api_token_secret() -> None:
+    """Finishing Part 12 removed every local-stack component's own hard dependency on
+    BROWSETERM_CLOUD_INTERNAL_API_TOKEN being byte-identical to Cloud's real value - the device-
+    command/device-command-reporting paths all now authenticate as the device itself instead. The
+    one remaining reader is container-maker's own save_reconciler.py, a genuinely cluster-wide
+    "find every user's stuck saves" sweep that cannot be scoped to a per-device credential; its
+    manifest's envFrom still requires this Secret to EXIST (a missing Secret means
+    CreateContainerConfigError, blocking container-maker's pod from starting at all - the actual
+    thing that was blocking Setup for every real user, since there was never a legitimate way for
+    one to obtain the real value). Always created, even with an empty token - same convention
+    _ensure_ngrok_credentials_secret already uses: an empty value lets container-maker's pod
+    actually start, and only the cluster-wide sweep itself (not consumer-facing) gets a 401 until
+    the operator supplies a real token."""
     _create_or_update([
         "kubectl", "--context", KUBE_CONTEXT, "-n", NAMESPACE, "create", "secret", "generic",
         "browseterm-internal-api-token",
@@ -332,6 +325,7 @@ def _deploy_container_maker(cloud_ingress_host_ip: str) -> None:
         NAMESPACE, DOCKER_HUB_REPO_NAME, DOCKER_HUB_REPO_PASSWORD, _CONTAINER_MAKER_INGRESS_HOST,
         "minio", "minio-service:9000", "browseterm-snapshots", "false",
         BROWSETERM_CLOUD_API_URL, urlparse(BROWSETERM_CLOUD_API_URL).hostname or "", cloud_ingress_host_ip,
+        DEVICE_AGENT_LOCAL_API_URL,
     )
 
 
@@ -449,24 +443,25 @@ def _deploy_socket_ssh() -> None:
     _restart_deployment("socket-ssh")
 
 
-def _deploy_status_monitor(device_id: str, cloud_ingress_host_ip: str) -> None:
+def _deploy_status_monitor(device_id: str) -> None:
+    """Finishing Part 12 dropped status_monitor's last direct Cloud call (resource_reconciler.py's
+    own two calls, now routed through Device Agent's local API like everything else it does) - its
+    manifest no longer references BROWSETERM_CLOUD_API_URL/CLOUD_INGRESS_HOST(_IP) at all, so
+    unlike reaper below (not yet migrated) this no longer needs cloud_ingress_host_ip either."""
     _write_env_mk("status_monitor", {
         "NAMESPACE": NAMESPACE, "REPO_NAME": DOCKER_HUB_REPO_NAME,
-        "BROWSETERM_CLOUD_API_URL": BROWSETERM_CLOUD_API_URL,
-        "CLOUD_INGRESS_HOST": urlparse(BROWSETERM_CLOUD_API_URL).hostname or "",
-        "CLOUD_INGRESS_HOST_IP": cloud_ingress_host_ip,
         "DEVICE_AGENT_LOCAL_API_URL": DEVICE_AGENT_LOCAL_API_URL,
         "DEVICE_ID": device_id,
     })
     _make("status_monitor", "dev_setup")
 
 
-def _deploy_reaper(device_id: str, cloud_ingress_host_ip: str) -> None:
+def _deploy_reaper(device_id: str) -> None:
+    """Finishing Part 12 dropped reaper's last direct Cloud call (find_idle_running_containers,
+    now GetIdleContainers through Device Agent's local API) - its manifest no longer references
+    BROWSETERM_CLOUD_API_URL/CLOUD_INGRESS_HOST(_IP), so this no longer needs cloud_ingress_host_ip."""
     _write_env_mk("reaper", {
         "NAMESPACE": NAMESPACE, "REPO_NAME": DOCKER_HUB_REPO_NAME,
-        "BROWSETERM_CLOUD_API_URL": BROWSETERM_CLOUD_API_URL,
-        "CLOUD_INGRESS_HOST": urlparse(BROWSETERM_CLOUD_API_URL).hostname or "",
-        "CLOUD_INGRESS_HOST_IP": cloud_ingress_host_ip,
         "DEVICE_ID": device_id, "IDLE_THRESHOLD_SECONDS": str(_IDLE_THRESHOLD_SECONDS),
         "DEVICE_AGENT_LOCAL_API_URL": DEVICE_AGENT_LOCAL_API_URL,
     })
@@ -491,8 +486,11 @@ def deploy(
     snapshot_job has no standing Deployment/manifest here (container-maker spawns it as a one-off
     Job per save, same as before this rewrite) - but its image is now built/pushed by this module
     too (_build_snapshot_job_image), closing what used to be a known, undeployed gap.
+
+    No prerequisite check at the top any more - finishing Part 12 removed the last hard
+    requirement on BROWSETERM_CLOUD_INTERNAL_API_TOKEN being set at all (see
+    _ensure_internal_api_token_secret's own docstring).
     """
-    check_prerequisites()
     _run_step(on_step, "Applying namespace and secrets", lambda: (
         _run(["kubectl", "config", "use-context", KUBE_CONTEXT]),
         _ensure_namespace(),
@@ -508,8 +506,8 @@ def deploy(
     _run_step(on_step, "Deploying Container Maker", lambda: _deploy_container_maker(cloud_ingress_host_ip))
     _run_step(on_step, "Building Device Agent image", _build_device_agent_image)
     _run_step(on_step, "Deploying Device Agent", _deploy_device_agent)
-    _run_step(on_step, "Deploying status-monitor", lambda: _deploy_status_monitor(device_id or "", cloud_ingress_host_ip))
-    _run_step(on_step, "Deploying reaper", lambda: _deploy_reaper(device_id or "", cloud_ingress_host_ip))
+    _run_step(on_step, "Deploying status-monitor", lambda: _deploy_status_monitor(device_id or ""))
+    _run_step(on_step, "Deploying reaper", lambda: _deploy_reaper(device_id or ""))
     _run_step(on_step, "Building tunnel-registrar image", _build_tunnel_registrar_image)
     _run_step(on_step, "Building snapshot-job image", _build_snapshot_job_image)
     _run_step(on_step, "Building Socket-SSH image", _build_socket_ssh_image)

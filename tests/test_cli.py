@@ -166,7 +166,6 @@ def _args(**overrides):
 
 
 def test_cmd_setup_non_interactive_requires_all_three_sizes(monkeypatch):
-    monkeypatch.setattr(cli.local_stack, "check_prerequisites", lambda: None)
     monkeypatch.setattr(cli, "load_state", lambda: DesktopState())
     monkeypatch.setattr(cli, "LinuxFileCredentialStore", lambda: _FakeCredentialStore(token="tok"))
     with pytest.raises(CliError, match="non-interactive requires"):
@@ -175,7 +174,6 @@ def test_cmd_setup_non_interactive_requires_all_three_sizes(monkeypatch):
 
 def test_cmd_setup_non_interactive_happy_path_creates_cluster_and_deploys(monkeypatch):
     calls = []
-    monkeypatch.setattr(cli.local_stack, "check_prerequisites", lambda: None)
     monkeypatch.setattr(cli.local_stack, "deploy", lambda device_id, token, on_step=None: calls.append(("deploy", device_id, token)))
     monkeypatch.setattr(cli.native_k3s, "create_cluster", lambda cpu, mem, storage, on_step=None: calls.append(("create_cluster", cpu, mem, storage)))
     monkeypatch.setattr(cli, "load_state", lambda: DesktopState(device_id="dev-1"))

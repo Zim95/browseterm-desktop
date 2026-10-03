@@ -2,8 +2,8 @@
 Headless Linux CLI (migration Part 18): `browseterm setup/start/stop/status/logs/configure/
 activate/repair/diagnostics/uninstall`, running native (no VM) k3s via desktop/native_k3s.py.
 
-Deliberately reuses local_stack.py's deploy()/check_prerequisites() and cluster_manager.py's pure,
-already-portable pod-listing helpers unchanged (see native_k3s.py's own module docstring for the
+Deliberately reuses local_stack.py's deploy() and cluster_manager.py's pure, already-portable
+pod-listing helpers unchanged (see native_k3s.py's own module docstring for the
 KUBE_CONTEXT-identity trick that makes this possible) - the only genuinely new code here is the
 native (non-Multipass) k3s lifecycle, Linux hardware detection, headless device-linking, and the
 CLI plumbing itself. No GUI dependency (pywebview) anywhere in this module - it must import and
@@ -159,7 +159,6 @@ def _sync_allocation_to_cloud(state: DesktopState, credential_store: LinuxFileCr
 def cmd_setup(args: argparse.Namespace) -> int:
     try:
         native_k3s.require_root()
-        local_stack.check_prerequisites()
     except (ClusterError, LocalStackError) as e:
         raise CliError(str(e))
 
