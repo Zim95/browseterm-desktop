@@ -199,6 +199,14 @@ class DesktopApp:
         except CloudClientError as e:
             self._show_login_error(e.message)
             return
+        except Exception as e:
+            # Anything other than CloudClientError (e.g. the Windows detect_hardware() bug this
+            # guards against: an unhandled FileNotFoundError from shelling out to a macOS-only
+            # command) used to propagate silently off this background thread - a --windowed
+            # PyInstaller build has no visible console, so the user was left stuck on the device
+            # code screen forever with no indication anything had gone wrong. Surface it instead.
+            self._show_login_error(f"Unexpected error: {e}")
+            return
         finally:
             self._login_in_progress = False
 

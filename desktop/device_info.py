@@ -1,7 +1,7 @@
 """
-Hardware detection for the Device page (macOS) and the headless Linux CLI (Part 18), via
-`sysctl`/`/proc`/`shutil`/`platform` -- no extra dependency (`psutil` etc.) needed for the handful
-of totals the Device Cloud API wants.
+Hardware detection for the Device page (macOS/Windows) and the headless Linux CLI (Part 18), via
+`sysctl`/`/proc`/`GlobalMemoryStatusEx`/`shutil`/`platform` -- no extra dependency (`psutil` etc.)
+needed for the handful of totals the Device Cloud API wants.
 
 Only physical totals live here. The user-configured `allocated_cpu`/`allocated_memory_bytes`/
 `allocated_storage_bytes` (FINAL_BROWSETERM_V2_IMPLEMENTATION_PLAN.md section 9 -- "User
@@ -9,6 +9,7 @@ configures... Cloud validates allocation <= physical capacity") are a stateful p
 hardware-detection concern, so they're read from `DesktopState` and assembled in `desktop/api.py`
 instead.
 """
+import ctypes
 import os
 import platform
 import shutil
@@ -71,7 +72,50 @@ def _detect_hardware_macos() -> dict[str, Any]:
     }
 
 
+class _MemoryStatusEx(ctypes.Structure):
+    """Mirrors the Win32 MEMORYSTATUSEX struct (sysinfoapi.h) - the only portion GlobalMemoryStatusEx
+    actually fills in that this needs is ullTotalPhys, but the struct must be declared and sized in
+    full or the call corrupts adjacent memory."""
+    _fields_ = [
+        ("dwLength", ctypes.c_ulong),
+        ("dwMemoryLoad", ctypes.c_ulong),
+        ("ullTotalPhys", ctypes.c_ulonglong),
+        ("ullAvailPhys", ctypes.c_ulonglong),
+        ("ullTotalPageFile", ctypes.c_ulonglong),
+        ("ullAvailPageFile", ctypes.c_ulonglong),
+        ("ullTotalVirtual", ctypes.c_ulonglong),
+        ("ullAvailVirtual", ctypes.c_ulonglong),
+        ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+    ]
+
+
+def _windows_total_memory_bytes() -> int:
+    """No sysctl/proc equivalent on Windows and no psutil dependency (see module docstring) - the
+    stdlib-only way to get total physical memory is the Win32 GlobalMemoryStatusEx API via
+    ctypes.windll (only present on Windows, which is why this isn't imported at module level)."""
+    status = _MemoryStatusEx()
+    status.dwLength = ctypes.sizeof(_MemoryStatusEx)
+    ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status))  # type: ignore[attr-defined]
+    return status.ullTotalPhys
+
+
+def _detect_hardware_windows() -> dict[str, Any]:
+    system_drive = os.environ.get("SystemDrive", "C:") + "\\"
+    return {
+        "device_name": platform.node(),
+        "os": platform.system(),
+        "architecture": platform.machine(),
+        "runtime_version": platform.release(),
+        "total_cpu": os.cpu_count() or 1,
+        "total_memory_bytes": _windows_total_memory_bytes(),
+        "total_storage_bytes": shutil.disk_usage(system_drive).total,
+        "gpu_info": None,
+    }
+
+
 def detect_hardware() -> dict[str, Any]:
     if sys.platform == "linux":
         return _detect_hardware_linux()
+    if sys.platform == "win32":
+        return _detect_hardware_windows()
     return _detect_hardware_macos()

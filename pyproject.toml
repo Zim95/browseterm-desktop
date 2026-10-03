@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "browseterm-desktop"
-version = "0.1.1"
+version = "0.1.2"
 description = "Browseterm Desktop app - shared Local login flow, device bootstrap/activation, Keychain-backed device credential."
 authors = ["Zim95 <shresthanamah@gmail.com>"]
 readme = "README.md"
