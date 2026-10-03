@@ -1125,6 +1125,23 @@ pyobjc-core = ">=12.2.2"
 pyobjc-framework-Cocoa = ">=12.2.2"
 
 [[package]]
+name = "pyobjc-framework-uniformtypeidentifiers"
+version = "12.2.2"
+description = "Wrappers for the framework UniformTypeIdentifiers on macOS"
+optional = false
+python-versions = ">=3.10"
+groups = ["main"]
+markers = "sys_platform == \"darwin\""
+files = [
+    {file = "pyobjc_framework_uniformtypeidentifiers-12.2.2-py2.py3-none-any.whl", hash = "sha256:1dc6a538df07c410e4bfd6457adcb0b663a5e0df331905dbe135bcfd3f89ae57"},
+    {file = "pyobjc_framework_uniformtypeidentifiers-12.2.2.tar.gz", hash = "sha256:12f8ba77dcc949ffb9f0f48743cae326aebec8e69cb1ac55a1d1e04dca7bd59a"},
+]
+
+[package.dependencies]
+pyobjc-core = ">=12.2.2"
+pyobjc-framework-Cocoa = ">=12.2.2"
+
+[[package]]
 name = "pyobjc-framework-webkit"
 version = "12.2.2"
 description = "Wrappers for the framework WebKit on macOS"
@@ -1191,38 +1208,40 @@ clr_loader = ">=0.3.1,<0.4.0"
 
 [[package]]
 name = "pywebview"
-version = "5.4"
+version = "6.2.1"
 description = "Build GUI for your Python program with JavaScript, HTML, and CSS"
 optional = false
-python-versions = ">=3.7"
+python-versions = ">=3.8"
 groups = ["main"]
 markers = "sys_platform == \"darwin\" or sys_platform == \"win32\""
 files = [
-    {file = "pywebview-5.4-py3-none-any.whl", hash = "sha256:0559c47db543556498dd38604a2a0479896c320f86c9b23499b8e580b58b699d"},
-    {file = "pywebview-5.4.tar.gz", hash = "sha256:b5e2c6c7502aaf72a9ae6034daf83785f5fad874fac7fa82bf4fcf854f1f083a"},
+    {file = "pywebview-6.2.1-py3-none-any.whl", hash = "sha256:9d07275f53894ab4d5e2e0e996227193e7187dec276d9b624dccbce029216b46"},
+    {file = "pywebview-6.2.1.tar.gz", hash = "sha256:71b7136752e40824655304d938efb62014218d1a90bd8e87e1cbdb1ce9c466af"},
 ]
 
 [package.dependencies]
 bottle = "*"
 proxy_tools = "*"
-pyobjc-core = {version = "*", markers = "sys_platform == \"darwin\""}
-pyobjc-framework-Cocoa = {version = "*", markers = "sys_platform == \"darwin\""}
-pyobjc-framework-Quartz = {version = "*", markers = "sys_platform == \"darwin\""}
-pyobjc-framework-security = {version = "*", markers = "sys_platform == \"darwin\""}
-pyobjc-framework-WebKit = {version = "*", markers = "sys_platform == \"darwin\""}
+pyobjc-core = {version = ">=9.0", markers = "sys_platform == \"darwin\""}
+pyobjc-framework-Cocoa = {version = ">=9.0", markers = "sys_platform == \"darwin\""}
+pyobjc-framework-Quartz = {version = ">=9.0", markers = "sys_platform == \"darwin\""}
+pyobjc-framework-security = {version = ">=9.0", markers = "sys_platform == \"darwin\""}
+pyobjc-framework-UniformTypeIdentifiers = {version = ">=9.0", markers = "sys_platform == \"darwin\""}
+pyobjc-framework-WebKit = {version = ">=9.0", markers = "sys_platform == \"darwin\""}
 pythonnet = {version = "*", markers = "sys_platform == \"win32\""}
 typing_extensions = "*"
 
 [package.extras]
-android = ["jnius", "kivy"]
+android = ["jnius"]
 cef = ["cefpython3"]
-gtk = ["PyGObject", "PyGObject-stubs"]
+dev = ["build", "pre-commit", "pytest", "ruff", "twine"]
+gtk = ["PyGObject (==3.50.0)", "PyGObject-stubs"]
 pyside2 = ["PySide2", "QtPy"]
 pyside6 = ["PySide6", "QtPy"]
 qt = ["PyQt6", "PyQt6-WebEngine", "QtPy"]
 qt5 = ["PyQt5", "QtPy", "pyqtwebengine"]
 qt6 = ["PyQt6", "PyQt6-WebEngine", "QtPy"]
-ssl = ["crpytography"]
+ssl = ["cryptography"]
 
 [[package]]
 name = "pywin32-ctypes"
@@ -1377,4 +1396,4 @@ type = ["pytest-mypy (>=1.0.1) ; platform_python_implementation != \"PyPy\""]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.11,<3.12"
-content-hash = "f2e877aee53fc43197097930f9815ad5e05893f032dd75740aa47edd094ce903"
+content-hash = "b0870291be3ae5a6ded69cb9cb0b58ceca066238ddbb5fd228bf584a59df08d4"

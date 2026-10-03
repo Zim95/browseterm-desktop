@@ -9,13 +9,19 @@ package-mode = false
 [tool.poetry.dependencies]
 python = ">=3.11,<3.12"
 pywebview = [
-    {version = "^5.0", markers = "sys_platform == 'darwin'", extras = ["cocoa"]},
+    # Bumped from ^5.0: 5.4's WinForms/EdgeChromium backend has a known GUI-thread reentrancy bug
+    # (r0x0r/pywebview#1823) where a cross-thread call like window.load_url() - exactly what
+    # desktop/app.py's background login-poll thread does on a successful login - can be silently
+    # dropped instead of navigating the window. Fixed upstream in r0x0r/pywebview#1844, which
+    # landed after 5.4 in the 6.x line; none of 6.0's breaking changes (the FileDialog enum,
+    # DRAG_REGION_SELECTOR, the old DOM API) are used anywhere in this codebase.
+    {version = "^6.2", markers = "sys_platform == 'darwin'", extras = ["cocoa"]},
     # Windows needs no extra: pywebview's own base install already pulls in `pythonnet` for
     # sys_platform == 'win32' (confirmed via its own package metadata), which gives it the native
     # WebView2/MSHTML-backed renderer - `cefpython3` (the "cef" extra) is only an optional fallback,
     # not required for standard Windows support. README's own "macOS/Windows only" GUI claim had
     # never actually been backed by an installable dependency on win32 until now.
-    {version = "^5.0", markers = "sys_platform == 'win32'"},
+    {version = "^6.2", markers = "sys_platform == 'win32'"},
 ]
 httpx = "^0.27.0"
 keyring = "^25.0"
