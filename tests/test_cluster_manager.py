@@ -95,6 +95,7 @@ def test_create_cluster_skips_launch_if_vm_exists(monkeypatch):
     })
     monkeypatch.setattr(cluster_manager, "subprocess", _FakeModule(fake))
     monkeypatch.setattr(cluster_manager, "_ensure_multipass_installed", lambda: None)
+    monkeypatch.setattr(cluster_manager, "_ensure_hyperv_enabled", lambda: None)
     monkeypatch.setattr(cluster_manager, "_install_k3s", lambda: None)
     monkeypatch.setattr(cluster_manager, "_install_gvisor", lambda: None)
     monkeypatch.setattr(cluster_manager, "_fetch_and_merge_kubeconfig", lambda: None)
@@ -115,6 +116,7 @@ def test_create_cluster_launches_when_vm_absent(monkeypatch):
 
     monkeypatch.setattr(cluster_manager, "subprocess", _FakeModule(run))
     monkeypatch.setattr(cluster_manager, "_ensure_multipass_installed", lambda: None)
+    monkeypatch.setattr(cluster_manager, "_ensure_hyperv_enabled", lambda: None)
     monkeypatch.setattr(cluster_manager, "_install_k3s", lambda: None)
     monkeypatch.setattr(cluster_manager, "_install_gvisor", lambda: None)
     monkeypatch.setattr(cluster_manager, "_fetch_and_merge_kubeconfig", lambda: None)
@@ -139,6 +141,7 @@ def test_create_cluster_tolerates_already_exists_race(monkeypatch):
 
     monkeypatch.setattr(cluster_manager, "subprocess", _FakeModule(run))
     monkeypatch.setattr(cluster_manager, "_ensure_multipass_installed", lambda: None)
+    monkeypatch.setattr(cluster_manager, "_ensure_hyperv_enabled", lambda: None)
     monkeypatch.setattr(cluster_manager, "_install_k3s", lambda: None)
     monkeypatch.setattr(cluster_manager, "_install_gvisor", lambda: None)
     monkeypatch.setattr(cluster_manager, "_fetch_and_merge_kubeconfig", lambda: None)
@@ -158,12 +161,14 @@ def test_create_cluster_reraises_other_launch_failures(monkeypatch):
 
     monkeypatch.setattr(cluster_manager, "subprocess", _FakeModule(run))
     monkeypatch.setattr(cluster_manager, "_ensure_multipass_installed", lambda: None)
+    monkeypatch.setattr(cluster_manager, "_ensure_hyperv_enabled", lambda: None)
     with pytest.raises(ClusterError, match="not enough disk space"):
         cluster_manager.create_cluster(4, 8.0)
 
 
 def test_create_cluster_reports_steps_in_order(monkeypatch):
     monkeypatch.setattr(cluster_manager, "_ensure_multipass_installed", lambda: None)
+    monkeypatch.setattr(cluster_manager, "_ensure_hyperv_enabled", lambda: None)
     monkeypatch.setattr(cluster_manager, "_create_vm", lambda *a: None)
     monkeypatch.setattr(cluster_manager, "_install_k3s", lambda: None)
     monkeypatch.setattr(cluster_manager, "_install_gvisor", lambda: None)
@@ -172,6 +177,7 @@ def test_create_cluster_reports_steps_in_order(monkeypatch):
     cluster_manager.create_cluster(4, 8.0, on_step=lambda name, status, detail: events.append((name, status)))
     assert events == [
         ("Installing Multipass", "started"), ("Installing Multipass", "succeeded"),
+        ("Enabling Hyper-V", "started"), ("Enabling Hyper-V", "succeeded"),
         ("Creating Multipass VM", "started"), ("Creating Multipass VM", "succeeded"),
         ("Installing k3s", "started"), ("Installing k3s", "succeeded"),
         ("Installing gVisor sandbox runtime", "started"), ("Installing gVisor sandbox runtime", "succeeded"),
@@ -181,6 +187,7 @@ def test_create_cluster_reports_steps_in_order(monkeypatch):
 
 def test_create_cluster_reports_failed_step_and_reraises(monkeypatch):
     monkeypatch.setattr(cluster_manager, "_ensure_multipass_installed", lambda: None)
+    monkeypatch.setattr(cluster_manager, "_ensure_hyperv_enabled", lambda: None)
     monkeypatch.setattr(cluster_manager, "_create_vm", lambda *a: None)
 
     def boom():
@@ -213,9 +220,32 @@ def test_create_cluster_reports_failed_multipass_install_and_reraises(monkeypatc
     assert not any(e[0] == "Creating Multipass VM" for e in events)
 
 
+def test_create_cluster_reports_failed_hyperv_enable_and_reraises(monkeypatch):
+    """A missing/unenabled Hyper-V must surface as its own failed step, after Multipass install
+    but before any VM creation - this is the exact gap caught for real on Windows: Multipass
+    installs fine via winget, then `multipass launch` fails with "The Hyper-V service does not
+    exist" because nothing had ever turned Hyper-V on."""
+    monkeypatch.setattr(cluster_manager, "_ensure_multipass_installed", lambda: None)
+
+    def boom():
+        raise ClusterError("Hyper-V has been enabled, but Windows needs a restart...")
+
+    monkeypatch.setattr(cluster_manager, "_ensure_hyperv_enabled", boom)
+    events = []
+    with pytest.raises(ClusterError, match="needs a restart"):
+        cluster_manager.create_cluster(4, 8.0, on_step=lambda name, status, detail: events.append((name, status, detail)))
+    assert events == [
+        ("Installing Multipass", "started", ""), ("Installing Multipass", "succeeded", ""),
+        ("Enabling Hyper-V", "started", ""),
+        ("Enabling Hyper-V", "failed", "Hyper-V has been enabled, but Windows needs a restart..."),
+    ]
+    assert not any(e[0] == "Creating Multipass VM" for e in events)
+
+
 def test_create_cluster_works_without_on_step(monkeypatch):
     """on_step is optional everywhere - existing callers that don't pass it must keep working."""
     monkeypatch.setattr(cluster_manager, "_ensure_multipass_installed", lambda: None)
+    monkeypatch.setattr(cluster_manager, "_ensure_hyperv_enabled", lambda: None)
     monkeypatch.setattr(cluster_manager, "_create_vm", lambda *a: None)
     monkeypatch.setattr(cluster_manager, "_install_k3s", lambda: None)
     monkeypatch.setattr(cluster_manager, "_install_gvisor", lambda: None)
@@ -490,6 +520,45 @@ def test_ensure_multipass_installed_raises_clear_error_when_still_missing_after_
     monkeypatch.setattr(cluster_manager, "subprocess", _FakeModule(fake))
     with pytest.raises(ClusterError, match="restart Browseterm Desktop"):
         cluster_manager._ensure_multipass_installed()
+
+
+def test_ensure_hyperv_enabled_noop_on_macos(monkeypatch):
+    monkeypatch.setattr(cluster_manager.sys, "platform", "darwin")
+    fake = _fake_run({})
+    monkeypatch.setattr(cluster_manager, "subprocess", _FakeModule(fake))
+    cluster_manager._ensure_hyperv_enabled()  # must not raise, must not shell out at all
+    assert fake.calls == []
+
+
+def test_ensure_hyperv_enabled_noop_when_already_enabled(monkeypatch):
+    monkeypatch.setattr(cluster_manager.sys, "platform", "win32")
+    monkeypatch.setattr(cluster_manager.platform, "win32_edition", lambda: "Professional", raising=False)
+    fake = _fake_run({("dism", "/online"): _FakeCompleted(0, "State : Enabled\n", "")})
+    monkeypatch.setattr(cluster_manager, "subprocess", _FakeModule(fake))
+    cluster_manager._ensure_hyperv_enabled()  # must not raise
+    assert not any(c[:2] == ["dism", "/online"] and "/enable-feature" in c for c in fake.calls)
+
+
+def test_ensure_hyperv_enabled_home_edition_points_at_virtualbox(monkeypatch):
+    monkeypatch.setattr(cluster_manager.sys, "platform", "win32")
+    monkeypatch.setattr(cluster_manager.platform, "win32_edition", lambda: "Core", raising=False)
+    fake = _fake_run({})
+    monkeypatch.setattr(cluster_manager, "subprocess", _FakeModule(fake))
+    with pytest.raises(ClusterError, match="VirtualBox"):
+        cluster_manager._ensure_hyperv_enabled()
+    assert fake.calls == []  # never even checks DISM - Home can't run Hyper-V regardless
+
+
+def test_ensure_hyperv_enabled_enables_via_elevated_dism_then_asks_for_restart(monkeypatch):
+    monkeypatch.setattr(cluster_manager.sys, "platform", "win32")
+    monkeypatch.setattr(cluster_manager.platform, "win32_edition", lambda: "Professional", raising=False)
+    fake = _fake_run({("dism", "/online"): lambda cmd: _FakeCompleted(0, "State : Disabled\n", "")})
+    monkeypatch.setattr(cluster_manager, "subprocess", _FakeModule(fake))
+    with pytest.raises(ClusterError, match="restart your computer"):
+        cluster_manager._ensure_hyperv_enabled()
+    assert any(
+        c[:2] == ["powershell", "-NoProfile"] and "Verb RunAs" in " ".join(c) for c in fake.calls
+    )
 
 
 class _FakeModule:

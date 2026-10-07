@@ -24,6 +24,7 @@ that known shape is precise enough and avoids adding a new dependency for it.
 """
 import json
 import os
+import platform
 import re
 import shutil
 import subprocess
@@ -98,6 +99,10 @@ _GVISOR_INSTALL_TIMEOUT_SECONDS = 120.0
 # of the download this has to leave room for a human actually responding to the native
 # password/UAC prompt the installer raises (see _install_multipass_macos/_windows docstrings).
 _MULTIPASS_INSTALL_TIMEOUT_SECONDS = 900.0
+_DISM_QUERY_TIMEOUT_SECONDS = 30.0
+# DISM itself is quick, but it has to wait on the UAC prompt PowerShell's `Start-Process -Verb
+# RunAs` raises for it first - same human-response headroom as _MULTIPASS_INSTALL_TIMEOUT_SECONDS.
+_HYPERV_ENABLE_TIMEOUT_SECONDS = 900.0
 
 # The pod monitor shows only the workloads that need to stay continuously running to keep the
 # local execution plane usable - verified against each component's actual current manifest
@@ -299,6 +304,75 @@ def _ensure_multipass_installed() -> None:
         )
 
 
+def _hyperv_supported() -> bool:
+    """Hyper-V is a Windows Pro/Enterprise/Education feature - Home editions can't run it at all,
+    no amount of DISM toggling changes that. `platform.win32_edition()` (Windows-only stdlib,
+    exists only when sys.platform == "win32") reports the Home-equivalent SKUs as some variant of
+    "Core" (`Core`, `CoreN`, `CoreSingleLanguage`, `CoreCountrySpecific`, ...) - every
+    Pro/Enterprise/Education SKU's own id is a different word entirely, so this one substring
+    check is reliable without needing a hardcoded enum of every real SKU name."""
+    return "core" not in platform.win32_edition().lower()
+
+
+def _hyperv_enabled() -> bool:
+    out = _run(
+        ["dism", "/online", "/get-featureinfo", "/featurename:Microsoft-Hyper-V"],
+        timeout=_DISM_QUERY_TIMEOUT_SECONDS,
+    )
+    return any(line.strip().lower() == "state : enabled" for line in out.splitlines())
+
+
+def _enable_hyperv() -> None:
+    """Unlike the Multipass installer winget just ran (which has its own `requireAdministrator`
+    manifest Windows auto-elevates via a UAC prompt even when launched non-elevated), DISM has no
+    such manifest - run non-elevated it just fails immediately with "Error: 740, Elevated
+    permissions are required to run DISM," no prompt raised at all. Needs an explicit elevation
+    request: PowerShell's `Start-Process -Verb RunAs -Wait` is the standard idiom for that (same
+    native UAC consent dialog as everywhere else here, just asked for up front instead of relying
+    on DISM to ask for it itself, which it never does). `/norestart` keeps DISM from triggering its
+    own automatic reboot - see _ensure_hyperv_enabled's own docstring for why that has to stay a
+    choice this flow surfaces to the user, never one it makes for them."""
+    _run(
+        [
+            "powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command",
+            "Start-Process -FilePath dism.exe -ArgumentList "
+            "'/online','/enable-feature','/featurename:Microsoft-Hyper-V','/all','/norestart' "
+            "-Verb RunAs -Wait",
+        ],
+        timeout=_HYPERV_ENABLE_TIMEOUT_SECONDS,
+    )
+
+
+def _ensure_hyperv_enabled() -> None:
+    """Windows-only - a no-op everywhere else (macOS's Multipass backend is QEMU, not Hyper-V).
+    The exact next failure a fresh Multipass install on Windows hits, caught for real: "launch
+    failed: The Hyper-V service does not exist. Ensure Hyper-V is installed correctly." Hyper-V is
+    a Windows OPTIONAL FEATURE, off by default on a clean install - neither Multipass's own
+    installer nor winget turns it on; something has to, and nothing did before this.
+
+    Enabling it (on success) ALWAYS requires a full Windows restart before it actually takes
+    effect - DISM can't do anything about that, and this flow has no business silently restarting
+    the user's machine out from under them (unsaved work, anything else they have open). So this
+    always ends in a ClusterError on the path that just ran the enable - either "go restart
+    Windows" on success, or the DISM failure itself - never a silent success; create_cluster's
+    caller surfaces this exactly like the "Multipass installed, restart the app" case above."""
+    if sys.platform != "win32":
+        return
+    if not _hyperv_supported():
+        raise ClusterError(
+            "Your Windows edition doesn't support Hyper-V (Home editions can't run it) -- "
+            "Multipass needs VirtualBox instead on Windows Home. Install VirtualBox from "
+            "https://www.virtualbox.org/, then click Setup again."
+        )
+    if _hyperv_enabled():
+        return
+    _enable_hyperv()
+    raise ClusterError(
+        "Hyper-V has been enabled, but Windows needs a restart before it actually takes effect -- "
+        "please restart your computer, then click Setup again."
+    )
+
+
 def _create_vm(cpu_cores: int, memory_gb: float, storage_gb: float) -> None:
     if cluster_exists():
         return
@@ -484,6 +558,7 @@ def create_cluster(
     on_step: Optional[StepCallback] = None,
 ) -> None:
     _run_step(on_step, "Installing Multipass", _ensure_multipass_installed)
+    _run_step(on_step, "Enabling Hyper-V", _ensure_hyperv_enabled)
     _run_step(on_step, "Creating Multipass VM", lambda: _create_vm(cpu_cores, memory_gb, storage_gb))
     _run_step(on_step, "Installing k3s", _install_k3s)
     _run_step(on_step, "Installing gVisor sandbox runtime", _install_gvisor)
