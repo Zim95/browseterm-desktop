@@ -367,7 +367,15 @@ def _enable_hyperv() -> None:
     `$p.ExitCode` as this whole command's own exit code (via `exit`) lets `_run`'s normal
     "non-zero exit raises ClusterError" handling catch a real failure here for the first time;
     `Write-Error` puts a real message on stderr for `_run` to surface, rather than `_run` falling
-    back to dumping this entire command string as the error (its behavior when stderr is empty)."""
+    back to dumping this entire command string as the error (its behavior when stderr is empty).
+
+    Second bug found live immediately after fixing the first one: DISM's own real exit code for
+    "enabled successfully, a restart is needed to finish" is 3010 (Windows' standard
+    ERROR_SUCCESS_REBOOT_REQUIRED), not 0 - treating every non-zero code as a failure made this
+    exact, expected, correct-and-working case ALSO report as "DISM failed with exit code 3010."
+    3010 has to be treated the same as 0 here - it's the normal, successful outcome for this
+    specific operation (Hyper-V always needs a reboot - see _ensure_hyperv_enabled's own
+    docstring), not an error condition."""
     _run(
         [
             "powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command",
@@ -375,7 +383,8 @@ def _enable_hyperv() -> None:
             "$p = Start-Process -FilePath dism.exe -ArgumentList "
             "'/online','/enable-feature','/featurename:Microsoft-Hyper-V','/all','/norestart' "
             "-Verb RunAs -Wait -PassThru -ErrorAction Stop; "
-            "if ($p.ExitCode -ne 0) { Write-Error \"DISM failed with exit code $($p.ExitCode)\"; exit $p.ExitCode } "
+            "if ($p.ExitCode -ne 0 -and $p.ExitCode -ne 3010) { "
+            "Write-Error \"DISM failed with exit code $($p.ExitCode)\"; exit $p.ExitCode } "
             "} catch { Write-Error \"Elevation request failed or was declined: $_\"; exit 1223 }",
         ],
         timeout=_HYPERV_ENABLE_TIMEOUT_SECONDS,
