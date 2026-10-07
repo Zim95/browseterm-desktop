@@ -353,13 +353,30 @@ def _enable_hyperv() -> None:
     native UAC consent dialog as everywhere else here, just asked for up front instead of relying
     on DISM to ask for it itself, which it never does). `/norestart` keeps DISM from triggering its
     own automatic reboot - see _ensure_hyperv_enabled's own docstring for why that has to stay a
-    choice this flow surfaces to the user, never one it makes for them."""
+    choice this flow surfaces to the user, never one it makes for them.
+
+    Bug found live (2026-10-07): an earlier version of this just ran `Start-Process ... -Wait`
+    with no `-PassThru` and never looked at the elevated DISM process's own exit code - so
+    `powershell.exe` itself always exited 0 regardless of whether the elevated DISM actually
+    succeeded, declining the UAC prompt included. _ensure_hyperv_enabled always reported "Hyper-V
+    has been enabled, please restart" after that unconditional "success," so a real failure (a
+    declined prompt, or DISM itself failing - e.g. the hardware/firmware doesn't support
+    virtualization at all) looked identical to a genuine success, and the user kept hitting the
+    exact same "please restart" message on every retry no matter how many times they actually
+    rebooted, since the real enable never took effect in the first place. `-PassThru` + propagating
+    `$p.ExitCode` as this whole command's own exit code (via `exit`) lets `_run`'s normal
+    "non-zero exit raises ClusterError" handling catch a real failure here for the first time;
+    `Write-Error` puts a real message on stderr for `_run` to surface, rather than `_run` falling
+    back to dumping this entire command string as the error (its behavior when stderr is empty)."""
     _run(
         [
             "powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command",
-            "Start-Process -FilePath dism.exe -ArgumentList "
+            "try { "
+            "$p = Start-Process -FilePath dism.exe -ArgumentList "
             "'/online','/enable-feature','/featurename:Microsoft-Hyper-V','/all','/norestart' "
-            "-Verb RunAs -Wait",
+            "-Verb RunAs -Wait -PassThru -ErrorAction Stop; "
+            "if ($p.ExitCode -ne 0) { Write-Error \"DISM failed with exit code $($p.ExitCode)\"; exit $p.ExitCode } "
+            "} catch { Write-Error \"Elevation request failed or was declined: $_\"; exit 1223 }",
         ],
         timeout=_HYPERV_ENABLE_TIMEOUT_SECONDS,
     )

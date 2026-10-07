@@ -569,6 +569,26 @@ def test_ensure_hyperv_enabled_enables_via_elevated_dism_then_asks_for_restart(m
     )
 
 
+def test_enable_hyperv_surfaces_a_real_failure_instead_of_claiming_success(monkeypatch):
+    """Bug found live: the elevated DISM process's own exit code used to never be checked at all,
+    so a declined UAC prompt or a genuine DISM failure (e.g. unsupported hardware) looked
+    identical to success - the owner kept seeing "Hyper-V has been enabled, please restart" on
+    every single retry no matter how many times they actually rebooted, because the enable never
+    really took effect in the first place. Once the elevated process's exit code is propagated,
+    `_run`'s own "non-zero exit raises" must catch this and surface the real stderr message
+    (DISM's failure, or a declined elevation prompt) instead of the generic "please restart"
+    text."""
+    monkeypatch.setattr(cluster_manager.sys, "platform", "win32")
+    monkeypatch.setattr(cluster_manager.platform, "win32_edition", lambda: "Professional", raising=False)
+    fake = _fake_run({
+        ("sc", "query"): _FakeCompleted(1, "", "The specified service does not exist as an installed service."),
+        ("powershell", "-NoProfile"): _FakeCompleted(1, "", "DISM failed with exit code 87"),
+    })
+    monkeypatch.setattr(cluster_manager, "subprocess", _FakeModule(fake))
+    with pytest.raises(ClusterError, match="DISM failed with exit code 87"):
+        cluster_manager._ensure_hyperv_enabled()
+
+
 def test_hyperv_enabled_check_itself_failing_is_treated_as_not_enabled(monkeypatch):
     """`_hyperv_enabled` bypasses `_run`'s own "non-zero exit raises" convention on purpose - a
     `sc.exe` hiccup (missing, timed out, anything) must fall through to attempting the enable
