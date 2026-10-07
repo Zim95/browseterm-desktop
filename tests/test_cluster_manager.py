@@ -4,6 +4,7 @@ Cluster section of the Device page -- desktop/cluster_manager.py shells out to m
 rather than requiring real CLI tools/a real VM.
 """
 import json
+import os
 
 import pytest
 
@@ -382,6 +383,38 @@ def test_install_gvisor_waits_for_node_ready_again(monkeypatch):
         c[:3] == ["multipass", "exec", cluster_manager.VM_NAME] and "wait" in c and "Ready" in " ".join(c)
         for c in fake.calls
     )
+
+
+def test_ensure_tool_dirs_on_path_adds_missing_homebrew_dir_on_darwin(monkeypatch):
+    monkeypatch.setattr(cluster_manager.sys, "platform", "darwin")
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")  # the minimal PATH a GUI-launched app actually gets
+    monkeypatch.setattr(cluster_manager.os.path, "isdir", lambda p: p == "/opt/homebrew/bin")
+    cluster_manager._ensure_tool_dirs_on_path()
+    assert "/opt/homebrew/bin" in os.environ["PATH"].split(os.pathsep)
+
+
+def test_ensure_tool_dirs_on_path_skips_dirs_that_dont_exist(monkeypatch):
+    monkeypatch.setattr(cluster_manager.sys, "platform", "darwin")
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    monkeypatch.setattr(cluster_manager.os.path, "isdir", lambda p: False)
+    cluster_manager._ensure_tool_dirs_on_path()
+    assert os.environ["PATH"] == "/usr/bin:/bin"
+
+
+def test_ensure_tool_dirs_on_path_does_not_duplicate_existing_entry(monkeypatch):
+    monkeypatch.setattr(cluster_manager.sys, "platform", "darwin")
+    monkeypatch.setenv("PATH", "/usr/bin:/bin:/opt/homebrew/bin")
+    monkeypatch.setattr(cluster_manager.os.path, "isdir", lambda p: True)
+    cluster_manager._ensure_tool_dirs_on_path()
+    assert os.environ["PATH"].split(os.pathsep).count("/opt/homebrew/bin") == 1
+
+
+def test_ensure_tool_dirs_on_path_noop_on_unlisted_platform(monkeypatch):
+    monkeypatch.setattr(cluster_manager.sys, "platform", "linux")
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    monkeypatch.setattr(cluster_manager.os.path, "isdir", lambda p: True)
+    cluster_manager._ensure_tool_dirs_on_path()
+    assert os.environ["PATH"] == "/usr/bin:/bin"
 
 
 def _which(available: set) -> callable:

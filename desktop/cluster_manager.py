@@ -33,6 +33,41 @@ import webbrowser
 from typing import Any, Callable, Optional
 
 MULTIPASS_DOWNLOAD_URL = "https://multipass.run/install"
+
+# This app is a PyInstaller windowed build (console=False) - launched via Finder/double-click (or
+# the Windows Start Menu shortcut the installer creates), not from a login shell, it inherits only
+# the OS's bare-minimum default PATH (`/usr/bin:/bin:/usr/sbin:/sbin` on macOS), never whatever a
+# .zprofile/.bashrc would normally export. Homebrew's own install location - /opt/homebrew/bin on
+# Apple Silicon - is routinely missing from that minimal PATH even though `brew` (and anything
+# brew installed, like Multipass itself) is genuinely present on the machine. Caught for real:
+# this made `_install_multipass_macos` below treat a perfectly good Homebrew install as "not
+# available" and fall straight to the download-page fallback, even though running the exact same
+# check from a Terminal found `brew` fine. Fixing this once, process-wide, at import time - rather
+# than only around the one `shutil.which("brew")` check - also fixes every other bare `multipass`/
+# `kubectl` call in this module (and local_stack.py's) that had the exact same latent gap.
+_EXTRA_PATH_DIRS: dict[str, tuple[str, ...]] = {
+    "darwin": ("/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin", "/usr/local/sbin"),
+    "win32": (
+        os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\WindowsApps"),
+        os.path.expandvars(r"%ProgramFiles%\Multipass\bin"),
+    ),
+}
+
+
+def _ensure_tool_dirs_on_path() -> None:
+    """Idempotent and safe to call repeatedly - only ever appends directories that (a) actually
+    exist on disk and (b) aren't already on PATH, so it can't shadow/reorder anything the process
+    already had. Module-level call below runs this once, at import time, rather than requiring
+    every call site in this file (and local_stack.py's) to remember to call it first."""
+    extra = _EXTRA_PATH_DIRS.get(sys.platform, ())
+    current_dirs = os.environ.get("PATH", "").split(os.pathsep)
+    missing = [d for d in extra if d and os.path.isdir(d) and d not in current_dirs]
+    if missing:
+        os.environ["PATH"] = os.pathsep.join(current_dirs + missing)
+
+
+_ensure_tool_dirs_on_path()
+
 VM_NAME = "browseterm"
 KUBE_CONTEXT = "browseterm"
 # Pinned, not "latest" - same convention every other component in this project pins its runtime
