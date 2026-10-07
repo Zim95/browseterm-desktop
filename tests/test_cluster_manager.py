@@ -554,12 +554,16 @@ def test_ensure_hyperv_enabled_home_edition_points_at_virtualbox(monkeypatch):
 
 def test_ensure_hyperv_enabled_enables_via_elevated_dism_then_asks_for_restart(monkeypatch):
     """`sc query vmms` reporting the service doesn't exist (the Windows Feature is off) must
-    trigger the elevated DISM enable path, then stop and ask for a restart - enabling Hyper-V
-    never takes effect without one, and this flow must never try to reboot the machine itself."""
+    trigger the elevated DISM enable path. DISM reporting exit code 3010 (surfaced here as the
+    'REBOOT_REQUIRED' marker on stdout - see _enable_hyperv's own docstring) means a restart is
+    genuinely needed before Hyper-V takes effect, so this must stop and ask for one rather than
+    letting Setup proceed into a VM-creation step that would just fail again anyway. This flow
+    must never try to reboot the machine itself."""
     monkeypatch.setattr(cluster_manager.sys, "platform", "win32")
     monkeypatch.setattr(cluster_manager.platform, "win32_edition", lambda: "Professional", raising=False)
     fake = _fake_run({
         ("sc", "query"): _FakeCompleted(1, "", "The specified service does not exist as an installed service."),
+        ("powershell", "-NoProfile"): _FakeCompleted(0, "REBOOT_REQUIRED\n", ""),
     })
     monkeypatch.setattr(cluster_manager, "subprocess", _FakeModule(fake))
     with pytest.raises(ClusterError, match="restart your computer"):
@@ -587,6 +591,25 @@ def test_enable_hyperv_surfaces_a_real_failure_instead_of_claiming_success(monke
     monkeypatch.setattr(cluster_manager, "subprocess", _FakeModule(fake))
     with pytest.raises(ClusterError, match="DISM failed with exit code 87"):
         cluster_manager._ensure_hyperv_enabled()
+
+
+def test_ensure_hyperv_enabled_does_not_demand_a_restart_when_dism_says_none_is_needed(monkeypatch):
+    """Third bug in this same sequence, found live: the owner restarted Windows multiple times
+    and kept seeing "please restart your computer" on every single Setup retry. If
+    `_hyperv_enabled()`'s own `sc query vmms` check ever false-negatives on a machine where
+    Hyper-V genuinely is already enabled (the exact symptom reported), DISM's re-run here reports
+    plain success (exit code 0, "already enabled, nothing to do" - no 'REBOOT_REQUIRED' marker on
+    stdout) - must fall through and let Setup continue instead of demanding a restart that was
+    never actually required, which would otherwise repeat forever no matter how many times the
+    user actually reboots."""
+    monkeypatch.setattr(cluster_manager.sys, "platform", "win32")
+    monkeypatch.setattr(cluster_manager.platform, "win32_edition", lambda: "Professional", raising=False)
+    fake = _fake_run({
+        ("sc", "query"): _FakeCompleted(1, "", "The specified service does not exist as an installed service."),
+        ("powershell", "-NoProfile"): _FakeCompleted(0, "", ""),  # DISM: exit 0, no restart needed
+    })
+    monkeypatch.setattr(cluster_manager, "subprocess", _FakeModule(fake))
+    cluster_manager._ensure_hyperv_enabled()  # must not raise
 
 
 def test_hyperv_enabled_check_itself_failing_is_treated_as_not_enabled(monkeypatch):

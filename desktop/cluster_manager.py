@@ -344,7 +344,7 @@ def _hyperv_enabled() -> bool:
     return result.returncode == 0 and "does not exist" not in combined.lower()
 
 
-def _enable_hyperv() -> None:
+def _enable_hyperv() -> bool:
     """Unlike the Multipass installer winget just ran (which has its own `requireAdministrator`
     manifest Windows auto-elevates via a UAC prompt even when launched non-elevated), DISM has no
     such manifest - run non-elevated it just fails immediately with "Error: 740, Elevated
@@ -375,20 +375,31 @@ def _enable_hyperv() -> None:
     exact, expected, correct-and-working case ALSO report as "DISM failed with exit code 3010."
     3010 has to be treated the same as 0 here - it's the normal, successful outcome for this
     specific operation (Hyper-V always needs a reboot - see _ensure_hyperv_enabled's own
-    docstring), not an error condition."""
-    _run(
+    docstring), not an error condition.
+
+    Returns whether DISM itself said a restart is actually needed (True for 3010, False for a
+    plain 0 - e.g. the feature turned out to already be fully enabled, so there was nothing new
+    to apply). _ensure_hyperv_enabled must only ask the user to restart when this is True - always
+    asking regardless, the third bug in this same sequence, would mean a permanent "please
+    restart" loop on any machine where _hyperv_enabled()'s own service-based check ever
+    false-negatives (reports "not enabled" when it actually already is): DISM would keep
+    reporting 0 ("already enabled, nothing to do") on every single retry, and the caller would
+    keep demanding a restart that was never actually required, forever."""
+    out = _run(
         [
             "powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command",
             "try { "
             "$p = Start-Process -FilePath dism.exe -ArgumentList "
             "'/online','/enable-feature','/featurename:Microsoft-Hyper-V','/all','/norestart' "
             "-Verb RunAs -Wait -PassThru -ErrorAction Stop; "
-            "if ($p.ExitCode -ne 0 -and $p.ExitCode -ne 3010) { "
+            "if ($p.ExitCode -eq 3010) { Write-Output 'REBOOT_REQUIRED' } "
+            "elseif ($p.ExitCode -ne 0) { "
             "Write-Error \"DISM failed with exit code $($p.ExitCode)\"; exit $p.ExitCode } "
             "} catch { Write-Error \"Elevation request failed or was declined: $_\"; exit 1223 }",
         ],
         timeout=_HYPERV_ENABLE_TIMEOUT_SECONDS,
     )
+    return "REBOOT_REQUIRED" in out
 
 
 def _ensure_hyperv_enabled() -> None:
@@ -398,12 +409,16 @@ def _ensure_hyperv_enabled() -> None:
     a Windows OPTIONAL FEATURE, off by default on a clean install - neither Multipass's own
     installer nor winget turns it on; something has to, and nothing did before this.
 
-    Enabling it (on success) ALWAYS requires a full Windows restart before it actually takes
-    effect - DISM can't do anything about that, and this flow has no business silently restarting
-    the user's machine out from under them (unsaved work, anything else they have open). So this
-    always ends in a ClusterError on the path that just ran the enable - either "go restart
-    Windows" on success, or the DISM failure itself - never a silent success; create_cluster's
-    caller surfaces this exactly like the "Multipass installed, restart the app" case above."""
+    Enabling it usually requires a full Windows restart before it actually takes effect - DISM
+    can't do anything about that, and this flow has no business silently restarting the user's
+    machine out from under them (unsaved work, anything else they have open) - so when
+    `_enable_hyperv()` says DISM reported that, this ends in a ClusterError asking for one rather
+    than silently proceeding to a VM-creation step that would just fail again anyway. But that
+    restart demand must only fire when DISM itself actually said so (exit code 3010) - if
+    `_hyperv_enabled()`'s own service-based check above ever false-negatives on a machine where
+    Hyper-V genuinely is already fully enabled, DISM's re-run here reports plain success (exit
+    code 0, nothing to do) and this falls through to let Setup continue, instead of demanding a
+    restart that was never actually required and would otherwise repeat forever."""
     if sys.platform != "win32":
         return
     if not _hyperv_supported():
@@ -414,11 +429,11 @@ def _ensure_hyperv_enabled() -> None:
         )
     if _hyperv_enabled():
         return
-    _enable_hyperv()
-    raise ClusterError(
-        "Hyper-V has been enabled, but Windows needs a restart before it actually takes effect -- "
-        "please restart your computer, then click Setup again."
-    )
+    if _enable_hyperv():
+        raise ClusterError(
+            "Hyper-V has been enabled, but Windows needs a restart before it actually takes "
+            "effect -- please restart your computer, then click Setup again."
+        )
 
 
 def _create_vm(cpu_cores: int, memory_gb: float, storage_gb: float) -> None:
