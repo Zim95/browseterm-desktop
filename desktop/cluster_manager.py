@@ -25,10 +25,14 @@ that known shape is precise enough and avoids adding a new dependency for it.
 import json
 import os
 import re
+import shutil
 import subprocess
+import sys
 import time
+import webbrowser
 from typing import Any, Callable, Optional
 
+MULTIPASS_DOWNLOAD_URL = "https://multipass.run/install"
 VM_NAME = "browseterm"
 KUBE_CONTEXT = "browseterm"
 # Pinned, not "latest" - same convention every other component in this project pins its runtime
@@ -54,6 +58,11 @@ _K3S_INSTALL_TIMEOUT_SECONDS = 300.0
 _K3S_READY_TIMEOUT_SECONDS = 90.0
 _DELETE_TIMEOUT_SECONDS = 60.0
 _GVISOR_INSTALL_TIMEOUT_SECONDS = 120.0
+# Same headroom as _LAUNCH_TIMEOUT_SECONDS - a cold Multipass install is itself a real VM
+# hypervisor package (QEMU/Hyper-V driver bits included), not just a small CLI binary, and on top
+# of the download this has to leave room for a human actually responding to the native
+# password/UAC prompt the installer raises (see _install_multipass_macos/_windows docstrings).
+_MULTIPASS_INSTALL_TIMEOUT_SECONDS = 900.0
 
 # The pod monitor shows only the workloads that need to stay continuously running to keep the
 # local execution plane usable - verified against each component's actual current manifest
@@ -173,6 +182,86 @@ def _vm_ip(info: dict[str, Any]) -> str:
 
 def _multipass_exec(args: list[str], timeout: float = _DEFAULT_TIMEOUT_SECONDS) -> str:
     return _run(["multipass", "exec", VM_NAME, "--"] + args, timeout=timeout)
+
+
+def _multipass_on_path() -> bool:
+    return shutil.which("multipass") is not None
+
+
+def _install_multipass_macos() -> None:
+    """Prefers Homebrew (ubiquitous on dev Macs, and the same cask Canonical itself publishes:
+    `brew install --cask multipass`). This cask's installer needs to run a privileged .pkg (it
+    installs `multipassd` as a root LaunchDaemon) - Homebrew has, since well before this was
+    written, handled the "no TTY available" case a GUI app's subprocess hits here by shelling out
+    to `osascript ... with administrator privileges`, which raises a native macOS password dialog
+    instead of hanging on a console `sudo` prompt that can never be answered. If Homebrew itself
+    isn't present, there's no safe unattended path left (installing Homebrew is itself a
+    sudo-gated, multi-minute operation this flow has no business triggering on its own) - open the
+    official installer page and ask the user to finish this one step by hand."""
+    if shutil.which("brew") is None:
+        webbrowser.open(MULTIPASS_DOWNLOAD_URL)
+        raise ClusterError(
+            "Multipass isn't installed, and Homebrew isn't available to install it automatically "
+            "-- opened the Multipass download page. Install it, then click Setup again."
+        )
+    _run(["brew", "install", "--cask", "multipass"], timeout=_MULTIPASS_INSTALL_TIMEOUT_SECONDS)
+
+
+def _install_multipass_windows() -> None:
+    """winget ships built-in on Windows 10 1709+/11, so it's the safe default here (unlike
+    Homebrew on macOS, nothing extra needs installing first). `Canonical.Multipass` is the real,
+    published winget package id. Multipass's own installer requires elevation (it sets up a
+    Hyper-V-backed VM backend) - winget-launched installers that declare an elevation requirement
+    trigger the normal Windows UAC consent dialog, a secure-desktop OS prompt that works
+    regardless of the calling process's own console/TTY state, so this is safe to invoke from a
+    GUI app's subprocess the same way the macOS path is."""
+    if shutil.which("winget") is None:
+        webbrowser.open(MULTIPASS_DOWNLOAD_URL)
+        raise ClusterError(
+            "Multipass isn't installed, and winget isn't available to install it automatically "
+            "-- opened the Multipass download page. Install it, then click Setup again."
+        )
+    _run(
+        [
+            "winget", "install", "--id", "Canonical.Multipass", "-e", "--silent",
+            "--accept-package-agreements", "--accept-source-agreements",
+        ],
+        timeout=_MULTIPASS_INSTALL_TIMEOUT_SECONDS,
+    )
+
+
+def _ensure_multipass_installed() -> None:
+    """First real step of Setup now (see create_cluster below) - previously, a missing `multipass`
+    binary surfaced as a bare "'multipass' not found -- is it installed and on PATH?" failure deep
+    inside the "Creating Multipass VM" step, with no attempt to actually install it even though
+    the owner's own expectation (and this app's whole pitch) is that clicking Setup is enough.
+
+    No-ops instantly if multipass is already on PATH - every other call site here still re-checks
+    via plain `shutil.which`/`_run`, never caching this result, so a user who installs Multipass
+    mid-session and retries Setup is picked up correctly without a restart.
+
+    After a successful install, the freshly-installed binary still might not resolve on THIS
+    already-running process's PATH (Homebrew/winget update the shell-level or registry PATH, which
+    an already-running GUI process never re-reads) - that failure mode gets its own explicit,
+    actionable message rather than a second confusing "not found"."""
+    if _multipass_on_path():
+        return
+    if sys.platform == "darwin":
+        _install_multipass_macos()
+    elif sys.platform == "win32":
+        _install_multipass_windows()
+    else:
+        webbrowser.open(MULTIPASS_DOWNLOAD_URL)
+        raise ClusterError(
+            f"Multipass isn't installed, and this platform ({sys.platform}) has no automatic "
+            "install path here -- opened the Multipass download page. Install it, then click "
+            "Setup again."
+        )
+    if not _multipass_on_path():
+        raise ClusterError(
+            "Multipass was installed, but this already-running app can't see it on PATH yet -- "
+            "please restart Browseterm Desktop, then click Setup again."
+        )
 
 
 def _create_vm(cpu_cores: int, memory_gb: float, storage_gb: float) -> None:
@@ -359,6 +448,7 @@ def create_cluster(
     cpu_cores: int, memory_gb: float, storage_gb: float = 40.0,
     on_step: Optional[StepCallback] = None,
 ) -> None:
+    _run_step(on_step, "Installing Multipass", _ensure_multipass_installed)
     _run_step(on_step, "Creating Multipass VM", lambda: _create_vm(cpu_cores, memory_gb, storage_gb))
     _run_step(on_step, "Installing k3s", _install_k3s)
     _run_step(on_step, "Installing gVisor sandbox runtime", _install_gvisor)

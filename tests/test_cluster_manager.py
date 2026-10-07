@@ -93,6 +93,7 @@ def test_create_cluster_skips_launch_if_vm_exists(monkeypatch):
         ("multipass", "info"): _FakeCompleted(0, _vm_info(), ""),
     })
     monkeypatch.setattr(cluster_manager, "subprocess", _FakeModule(fake))
+    monkeypatch.setattr(cluster_manager, "_ensure_multipass_installed", lambda: None)
     monkeypatch.setattr(cluster_manager, "_install_k3s", lambda: None)
     monkeypatch.setattr(cluster_manager, "_install_gvisor", lambda: None)
     monkeypatch.setattr(cluster_manager, "_fetch_and_merge_kubeconfig", lambda: None)
@@ -112,6 +113,7 @@ def test_create_cluster_launches_when_vm_absent(monkeypatch):
         return _FakeCompleted(0, "", "")
 
     monkeypatch.setattr(cluster_manager, "subprocess", _FakeModule(run))
+    monkeypatch.setattr(cluster_manager, "_ensure_multipass_installed", lambda: None)
     monkeypatch.setattr(cluster_manager, "_install_k3s", lambda: None)
     monkeypatch.setattr(cluster_manager, "_install_gvisor", lambda: None)
     monkeypatch.setattr(cluster_manager, "_fetch_and_merge_kubeconfig", lambda: None)
@@ -135,6 +137,7 @@ def test_create_cluster_tolerates_already_exists_race(monkeypatch):
         return _FakeCompleted(0, "", "")
 
     monkeypatch.setattr(cluster_manager, "subprocess", _FakeModule(run))
+    monkeypatch.setattr(cluster_manager, "_ensure_multipass_installed", lambda: None)
     monkeypatch.setattr(cluster_manager, "_install_k3s", lambda: None)
     monkeypatch.setattr(cluster_manager, "_install_gvisor", lambda: None)
     monkeypatch.setattr(cluster_manager, "_fetch_and_merge_kubeconfig", lambda: None)
@@ -153,11 +156,13 @@ def test_create_cluster_reraises_other_launch_failures(monkeypatch):
         return _FakeCompleted(0, "", "")
 
     monkeypatch.setattr(cluster_manager, "subprocess", _FakeModule(run))
+    monkeypatch.setattr(cluster_manager, "_ensure_multipass_installed", lambda: None)
     with pytest.raises(ClusterError, match="not enough disk space"):
         cluster_manager.create_cluster(4, 8.0)
 
 
 def test_create_cluster_reports_steps_in_order(monkeypatch):
+    monkeypatch.setattr(cluster_manager, "_ensure_multipass_installed", lambda: None)
     monkeypatch.setattr(cluster_manager, "_create_vm", lambda *a: None)
     monkeypatch.setattr(cluster_manager, "_install_k3s", lambda: None)
     monkeypatch.setattr(cluster_manager, "_install_gvisor", lambda: None)
@@ -165,6 +170,7 @@ def test_create_cluster_reports_steps_in_order(monkeypatch):
     events = []
     cluster_manager.create_cluster(4, 8.0, on_step=lambda name, status, detail: events.append((name, status)))
     assert events == [
+        ("Installing Multipass", "started"), ("Installing Multipass", "succeeded"),
         ("Creating Multipass VM", "started"), ("Creating Multipass VM", "succeeded"),
         ("Installing k3s", "started"), ("Installing k3s", "succeeded"),
         ("Installing gVisor sandbox runtime", "started"), ("Installing gVisor sandbox runtime", "succeeded"),
@@ -173,6 +179,7 @@ def test_create_cluster_reports_steps_in_order(monkeypatch):
 
 
 def test_create_cluster_reports_failed_step_and_reraises(monkeypatch):
+    monkeypatch.setattr(cluster_manager, "_ensure_multipass_installed", lambda: None)
     monkeypatch.setattr(cluster_manager, "_create_vm", lambda *a: None)
 
     def boom():
@@ -186,8 +193,28 @@ def test_create_cluster_reports_failed_step_and_reraises(monkeypatch):
     assert not any(e[0] == "Configuring kubectl access" for e in events)
 
 
+def test_create_cluster_reports_failed_multipass_install_and_reraises(monkeypatch):
+    """A missing Multipass install must surface as its own failed step, before any VM/k3s step
+    even starts - this is the exact gap that used to make "multipass not found" show up as a
+    confusing failure deep inside "Creating Multipass VM" instead."""
+
+    def boom():
+        raise ClusterError("Multipass isn't installed, and Homebrew isn't available...")
+
+    monkeypatch.setattr(cluster_manager, "_ensure_multipass_installed", boom)
+    events = []
+    with pytest.raises(ClusterError, match="Homebrew isn't available"):
+        cluster_manager.create_cluster(4, 8.0, on_step=lambda name, status, detail: events.append((name, status, detail)))
+    assert events == [
+        ("Installing Multipass", "started", ""),
+        ("Installing Multipass", "failed", "Multipass isn't installed, and Homebrew isn't available..."),
+    ]
+    assert not any(e[0] == "Creating Multipass VM" for e in events)
+
+
 def test_create_cluster_works_without_on_step(monkeypatch):
     """on_step is optional everywhere - existing callers that don't pass it must keep working."""
+    monkeypatch.setattr(cluster_manager, "_ensure_multipass_installed", lambda: None)
     monkeypatch.setattr(cluster_manager, "_create_vm", lambda *a: None)
     monkeypatch.setattr(cluster_manager, "_install_k3s", lambda: None)
     monkeypatch.setattr(cluster_manager, "_install_gvisor", lambda: None)
@@ -355,6 +382,81 @@ def test_install_gvisor_waits_for_node_ready_again(monkeypatch):
         c[:3] == ["multipass", "exec", cluster_manager.VM_NAME] and "wait" in c and "Ready" in " ".join(c)
         for c in fake.calls
     )
+
+
+def _which(available: set) -> callable:
+    """Fake `shutil.which` - returns a fake path for any tool name in `available`, None otherwise."""
+    return lambda tool: f"/fake/bin/{tool}" if tool in available else None
+
+
+def test_ensure_multipass_installed_noop_when_already_on_path(monkeypatch):
+    monkeypatch.setattr(cluster_manager.shutil, "which", _which({"multipass"}))
+    fake = _fake_run({})
+    monkeypatch.setattr(cluster_manager, "subprocess", _FakeModule(fake))
+    cluster_manager._ensure_multipass_installed()  # must not raise, must not shell out at all
+    assert fake.calls == []
+
+
+def test_ensure_multipass_installed_macos_uses_brew(monkeypatch):
+    monkeypatch.setattr(cluster_manager.sys, "platform", "darwin")
+    monkeypatch.setattr(cluster_manager.shutil, "which", _which({"brew"}))
+
+    def run(cmd, **kwargs):
+        if cmd[:3] == ["brew", "install", "--cask"]:
+            # Simulate the install actually landing multipass on PATH afterwards.
+            monkeypatch.setattr(cluster_manager.shutil, "which", _which({"brew", "multipass"}))
+            return _FakeCompleted(0, "", "")
+        return _FakeCompleted(0, "", "")
+
+    monkeypatch.setattr(cluster_manager, "subprocess", _FakeModule(run))
+    cluster_manager._ensure_multipass_installed()  # must not raise
+
+
+def test_ensure_multipass_installed_macos_without_brew_opens_browser(monkeypatch):
+    monkeypatch.setattr(cluster_manager.sys, "platform", "darwin")
+    monkeypatch.setattr(cluster_manager.shutil, "which", _which(set()))
+    opened = []
+    monkeypatch.setattr(cluster_manager.webbrowser, "open", lambda url: opened.append(url))
+    with pytest.raises(ClusterError, match="Homebrew isn't available"):
+        cluster_manager._ensure_multipass_installed()
+    assert opened == [cluster_manager.MULTIPASS_DOWNLOAD_URL]
+
+
+def test_ensure_multipass_installed_windows_uses_winget(monkeypatch):
+    monkeypatch.setattr(cluster_manager.sys, "platform", "win32")
+    monkeypatch.setattr(cluster_manager.shutil, "which", _which({"winget"}))
+    calls = []
+
+    def run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd[:2] == ["winget", "install"]:
+            monkeypatch.setattr(cluster_manager.shutil, "which", _which({"winget", "multipass"}))
+        return _FakeCompleted(0, "", "")
+
+    monkeypatch.setattr(cluster_manager, "subprocess", _FakeModule(run))
+    cluster_manager._ensure_multipass_installed()  # must not raise
+    assert any(c[:4] == ["winget", "install", "--id", "Canonical.Multipass"] for c in calls)
+
+
+def test_ensure_multipass_installed_windows_without_winget_opens_browser(monkeypatch):
+    monkeypatch.setattr(cluster_manager.sys, "platform", "win32")
+    monkeypatch.setattr(cluster_manager.shutil, "which", _which(set()))
+    opened = []
+    monkeypatch.setattr(cluster_manager.webbrowser, "open", lambda url: opened.append(url))
+    with pytest.raises(ClusterError, match="winget isn't available"):
+        cluster_manager._ensure_multipass_installed()
+    assert opened == [cluster_manager.MULTIPASS_DOWNLOAD_URL]
+
+
+def test_ensure_multipass_installed_raises_clear_error_when_still_missing_after_install(monkeypatch):
+    """The installer can succeed (exit 0) while the freshly-installed binary still isn't visible
+    to this already-running process's PATH - must not be reported as a silent success."""
+    monkeypatch.setattr(cluster_manager.sys, "platform", "darwin")
+    monkeypatch.setattr(cluster_manager.shutil, "which", _which({"brew"}))  # never add multipass
+    fake = _fake_run({("brew", "install"): _FakeCompleted(0, "", "")})
+    monkeypatch.setattr(cluster_manager, "subprocess", _FakeModule(fake))
+    with pytest.raises(ClusterError, match="restart Browseterm Desktop"):
+        cluster_manager._ensure_multipass_installed()
 
 
 class _FakeModule:
