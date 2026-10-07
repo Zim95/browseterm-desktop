@@ -531,12 +531,15 @@ def test_ensure_hyperv_enabled_noop_on_macos(monkeypatch):
 
 
 def test_ensure_hyperv_enabled_noop_when_already_enabled(monkeypatch):
+    """The `vmms` service being queryable (and not reporting "does not exist") at all is itself
+    the "already enabled" signal - must not go anywhere near the elevated DISM enable path, which
+    would mean a needless UAC prompt on every Setup run against a machine that's already fine."""
     monkeypatch.setattr(cluster_manager.sys, "platform", "win32")
     monkeypatch.setattr(cluster_manager.platform, "win32_edition", lambda: "Professional", raising=False)
-    fake = _fake_run({("dism", "/online"): _FakeCompleted(0, "State : Enabled\n", "")})
+    fake = _fake_run({("sc", "query"): _FakeCompleted(0, "SERVICE_NAME: vmms\n        STATE: 4  RUNNING\n", "")})
     monkeypatch.setattr(cluster_manager, "subprocess", _FakeModule(fake))
     cluster_manager._ensure_hyperv_enabled()  # must not raise
-    assert not any(c[:2] == ["dism", "/online"] and "/enable-feature" in c for c in fake.calls)
+    assert not any(c[:2] == ["powershell", "-NoProfile"] for c in fake.calls)
 
 
 def test_ensure_hyperv_enabled_home_edition_points_at_virtualbox(monkeypatch):
@@ -546,19 +549,35 @@ def test_ensure_hyperv_enabled_home_edition_points_at_virtualbox(monkeypatch):
     monkeypatch.setattr(cluster_manager, "subprocess", _FakeModule(fake))
     with pytest.raises(ClusterError, match="VirtualBox"):
         cluster_manager._ensure_hyperv_enabled()
-    assert fake.calls == []  # never even checks DISM - Home can't run Hyper-V regardless
+    assert fake.calls == []  # never even checks the service - Home can't run Hyper-V regardless
 
 
 def test_ensure_hyperv_enabled_enables_via_elevated_dism_then_asks_for_restart(monkeypatch):
+    """`sc query vmms` reporting the service doesn't exist (the Windows Feature is off) must
+    trigger the elevated DISM enable path, then stop and ask for a restart - enabling Hyper-V
+    never takes effect without one, and this flow must never try to reboot the machine itself."""
     monkeypatch.setattr(cluster_manager.sys, "platform", "win32")
     monkeypatch.setattr(cluster_manager.platform, "win32_edition", lambda: "Professional", raising=False)
-    fake = _fake_run({("dism", "/online"): lambda cmd: _FakeCompleted(0, "State : Disabled\n", "")})
+    fake = _fake_run({
+        ("sc", "query"): _FakeCompleted(1, "", "The specified service does not exist as an installed service."),
+    })
     monkeypatch.setattr(cluster_manager, "subprocess", _FakeModule(fake))
     with pytest.raises(ClusterError, match="restart your computer"):
         cluster_manager._ensure_hyperv_enabled()
     assert any(
         c[:2] == ["powershell", "-NoProfile"] and "Verb RunAs" in " ".join(c) for c in fake.calls
     )
+
+
+def test_hyperv_enabled_check_itself_failing_is_treated_as_not_enabled(monkeypatch):
+    """`_hyperv_enabled` bypasses `_run`'s own "non-zero exit raises" convention on purpose - a
+    `sc.exe` hiccup (missing, timed out, anything) must fall through to attempting the enable
+    path, not blow up this check with an unrelated exception."""
+    monkeypatch.setattr(cluster_manager.sys, "platform", "win32")
+    monkeypatch.setattr(cluster_manager.platform, "win32_edition", lambda: "Professional", raising=False)
+    fake = _fake_run({("sc", "query"): _FakeCompleted(1, "", "unexpected sc.exe error")})
+    monkeypatch.setattr(cluster_manager, "subprocess", _FakeModule(fake))
+    assert cluster_manager._hyperv_enabled() is False
 
 
 class _FakeModule:

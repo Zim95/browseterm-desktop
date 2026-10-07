@@ -99,7 +99,7 @@ _GVISOR_INSTALL_TIMEOUT_SECONDS = 120.0
 # of the download this has to leave room for a human actually responding to the native
 # password/UAC prompt the installer raises (see _install_multipass_macos/_windows docstrings).
 _MULTIPASS_INSTALL_TIMEOUT_SECONDS = 900.0
-_DISM_QUERY_TIMEOUT_SECONDS = 30.0
+_HYPERV_QUERY_TIMEOUT_SECONDS = 30.0  # a plain `sc query` - no elevation prompt to wait on here
 # DISM itself is quick, but it has to wait on the UAC prompt PowerShell's `Start-Process -Verb
 # RunAs` raises for it first - same human-response headroom as _MULTIPASS_INSTALL_TIMEOUT_SECONDS.
 _HYPERV_ENABLE_TIMEOUT_SECONDS = 900.0
@@ -315,11 +315,33 @@ def _hyperv_supported() -> bool:
 
 
 def _hyperv_enabled() -> bool:
-    out = _run(
-        ["dism", "/online", "/get-featureinfo", "/featurename:Microsoft-Hyper-V"],
-        timeout=_DISM_QUERY_TIMEOUT_SECONDS,
-    )
-    return any(line.strip().lower() == "state : enabled" for line in out.splitlines())
+    """Checks via the Hyper-V Virtual Machine Management service (`vmms`), not DISM - caught for
+    real: `dism /online` needs elevation for EVERY operation against the live OS image, including
+    a read-only `/get-featureinfo` query, not just the `/enable-feature` mutation
+    `_enable_hyperv` already elevates below. Routing this check through DISM too would mean a UAC
+    prompt on every single Setup run just to confirm Hyper-V is already fine, which defeats the
+    whole point of checking first.
+
+    Querying a service's status (unlike starting/stopping/configuring one) needs no elevation at
+    all. When the Hyper-V Windows Feature is off, `vmms` isn't registered in the Service Control
+    Manager at all, so `sc query vmms` fails with "The specified service does not exist as an
+    installed service" - not a coincidence: this is the exact same "service does not exist"
+    wording Multipass's own real launch failure reported, confirming it's a meaningful,
+    elevation-free signal of the feature's actual on/off state.
+
+    Bypasses `_run` deliberately - its "any non-zero exit raises ClusterError" convention would
+    turn the expected "not enabled yet" case into an exception instead of a plain `False`; here a
+    non-zero exit for ANY reason (missing service, sc.exe itself missing, a timeout) is just
+    treated as "not confirmed enabled" so _ensure_hyperv_enabled falls through to actually trying
+    to enable it, rather than this check's own failure mode being load-bearing."""
+    try:
+        result = subprocess.run(
+            ["sc", "query", "vmms"], capture_output=True, text=True, timeout=_HYPERV_QUERY_TIMEOUT_SECONDS,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+    combined = (result.stdout or "") + (result.stderr or "")
+    return result.returncode == 0 and "does not exist" not in combined.lower()
 
 
 def _enable_hyperv() -> None:
