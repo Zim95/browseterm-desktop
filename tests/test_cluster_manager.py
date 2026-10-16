@@ -623,6 +623,35 @@ def test_hyperv_enabled_check_itself_failing_is_treated_as_not_enabled(monkeypat
     assert cluster_manager._hyperv_enabled() is False
 
 
+def test_hyperv_enabled_exit_zero_with_empty_output_is_not_enabled(monkeypatch):
+    """Reported live: `sc.exe query vmms` printing literally nothing. If that ever comes with a 0
+    exit, the old double-negative check ("does not exist" not in "") called it enabled and skipped
+    the enable path - only `sc`'s real SERVICE_NAME/STATE output may count as enabled."""
+    monkeypatch.setattr(cluster_manager.sys, "platform", "win32")
+    fake = _fake_run({("sc", "query"): _FakeCompleted(0, "", "")})
+    monkeypatch.setattr(cluster_manager, "subprocess", _FakeModule(fake))
+    assert cluster_manager._hyperv_enabled() is False
+
+
+def test_hyperv_enabled_true_for_real_sc_query_output(monkeypatch):
+    """Verbatim `sc.exe query vmms` output captured on a real Windows 10 Pro machine with Hyper-V
+    enabled."""
+    monkeypatch.setattr(cluster_manager.sys, "platform", "win32")
+    real_output = (
+        "\nSERVICE_NAME: vmms \n"
+        "        TYPE               : 10  WIN32_OWN_PROCESS  \n"
+        "        STATE              : 4  RUNNING \n"
+        "                                (STOPPABLE, NOT_PAUSABLE, ACCEPTS_PRESHUTDOWN)\n"
+        "        WIN32_EXIT_CODE    : 0  (0x0)\n"
+        "        SERVICE_EXIT_CODE  : 0  (0x0)\n"
+        "        CHECKPOINT         : 0x0\n"
+        "        WAIT_HINT          : 0x0\n"
+    )
+    fake = _fake_run({("sc", "query"): _FakeCompleted(0, real_output, "")})
+    monkeypatch.setattr(cluster_manager, "subprocess", _FakeModule(fake))
+    assert cluster_manager._hyperv_enabled() is True
+
+
 class _FakeModule:
     """Stands in for the `subprocess` module so `cluster_manager.subprocess.run(...)` (used both
     by `_run` and directly inside `_fetch_and_merge_kubeconfig`) resolves to the same fake."""

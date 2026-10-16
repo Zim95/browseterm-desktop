@@ -333,7 +333,14 @@ def _hyperv_enabled() -> bool:
     turn the expected "not enabled yet" case into an exception instead of a plain `False`; here a
     non-zero exit for ANY reason (missing service, sc.exe itself missing, a timeout) is just
     treated as "not confirmed enabled" so _ensure_hyperv_enabled falls through to actually trying
-    to enable it, rather than this check's own failure mode being load-bearing."""
+    to enable it, rather than this check's own failure mode being load-bearing.
+
+    Positive check, not a double negative: an earlier version returned True whenever the exit
+    code was 0 and "does not exist" was absent - so a 0 exit with EMPTY output (reported once on a
+    real machine where `sc.exe query vmms` printed literally nothing) counted as "enabled," which
+    would skip the enable path entirely. Requiring `sc`'s own SERVICE_NAME/STATE field labels to
+    actually be present closes that, and also doesn't depend on the "does not exist" error text,
+    which Windows localizes (the field labels themselves aren't)."""
     try:
         result = subprocess.run(
             ["sc", "query", "vmms"], capture_output=True, text=True, timeout=_HYPERV_QUERY_TIMEOUT_SECONDS,
@@ -341,7 +348,7 @@ def _hyperv_enabled() -> bool:
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return False
     combined = (result.stdout or "") + (result.stderr or "")
-    return result.returncode == 0 and "does not exist" not in combined.lower()
+    return result.returncode == 0 and "SERVICE_NAME" in combined and "STATE" in combined
 
 
 def _enable_hyperv() -> bool:
